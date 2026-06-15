@@ -656,6 +656,67 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _origin_user_id_for_target(job: dict, target: dict) -> Optional[str]:
+    """Return the originating gateway user id when *target* is the job origin."""
+    origin = _resolve_origin(job) or {}
+    if not origin:
+        return None
+    if str(origin.get("platform", "")).lower() != str(target.get("platform", "")).lower():
+        return None
+    if str(origin.get("chat_id", "")) != str(target.get("chat_id", "")):
+        return None
+    origin_thread = origin.get("thread_id")
+    target_thread = target.get("thread_id")
+    if origin_thread is not None and str(origin_thread) != str(target_thread or ""):
+        return None
+    user_id = origin.get("user_id")
+    return str(user_id) if user_id is not None else None
+
+
+def _mirror_cron_delivery_to_session(
+    job: dict,
+    target: dict,
+    message_text: str,
+    platform_message_id: Optional[str] = None,
+) -> None:
+    """Best-effort mirror of delivered cron output into the target gateway session.
+
+    Cron runs are isolated from live chat sessions, but users often reply to
+    their delivered cron messages later ("Correct", "yes", "stop this").
+    Mirroring the exact delivered text into the target session gives the next
+    live turn the same context the user sees in Telegram/Slack/etc. This is
+    intentionally non-fatal: delivery succeeded even if there is no active
+    gateway session to mirror into.
+    """
+    try:
+        # Default on: gateway.mirror.py has long supported delivery mirrors,
+        # but cron's direct delivery path previously skipped it. Keep an escape
+        # hatch for installations that prefer isolated cron transcripts.
+        try:
+            user_cfg = load_config() or {}
+            cron_cfg = user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+            if cron_cfg.get("mirror_deliveries") is False:
+                return
+        except Exception:
+            pass
+
+        from gateway.mirror import mirror_to_session
+
+        mirror_to_session(
+            str(target.get("platform", "")),
+            str(target.get("chat_id", "")),
+            message_text,
+            source_label=f"cron:{job.get('id', '')}",
+            thread_id=target.get("thread_id"),
+            user_id=_origin_user_id_for_target(job, target),
+            role="assistant",
+            platform_message_id=platform_message_id,
+            observed=True,
+        )
+    except Exception as exc:
+        logger.debug("Job '%s': cron delivery mirror failed: %s", job.get("id", "?"), exc)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -762,6 +823,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
+                platform_message_id = None
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
                     future = safe_schedule_threadsafe(
@@ -789,6 +851,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             and getattr(send_result, "raw_response", None)
                             and send_result.raw_response.get("thread_fallback")
                         ):
+                            platform_message_id = getattr(send_result, "message_id", None)
                             requested_thread_id = send_result.raw_response.get("requested_thread_id") or thread_id
                             msg = (
                                 f"configured thread_id {requested_thread_id} for "
@@ -796,6 +859,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             )
                             logger.warning("Job '%s': %s", job["id"], msg)
                             delivery_errors.append(msg)
+
+                if text_to_send and adapter_ok and send_result:
+                    platform_message_id = getattr(send_result, "message_id", None) or platform_message_id
 
                 # Send extracted media files as native attachments via the live adapter
                 if adapter_ok and media_files:
@@ -810,6 +876,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
+                    _mirror_cron_delivery_to_session(
+                        job,
+                        target,
+                        cleaned_delivery_content.strip(),
+                        platform_message_id=str(platform_message_id) if platform_message_id is not None else None,
+                    )
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
             except Exception as e:
@@ -844,6 +916,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.append(msg)
                 continue
 
+            _mirror_cron_delivery_to_session(
+                job,
+                target,
+                cleaned_delivery_content.strip(),
+                platform_message_id=str(result.get("message_id")) if isinstance(result, dict) and result.get("message_id") is not None else None,
+            )
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
     if delivery_errors:

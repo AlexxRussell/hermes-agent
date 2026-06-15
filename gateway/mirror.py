@@ -29,6 +29,9 @@ def mirror_to_session(
     source_label: str = "cli",
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    role: str = "assistant",
+    platform_message_id: Optional[str] = None,
+    observed: bool = False,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -57,11 +60,13 @@ def mirror_to_session(
             return False
 
         mirror_msg = {
-            "role": "assistant",
+            "role": role or "assistant",
             "content": message_text,
             "timestamp": datetime.now().isoformat(),
             "mirror": True,
             "mirror_source": source_label,
+            "platform_message_id": platform_message_id,
+            "observed": observed,
         }
 
         _append_to_sqlite(session_id, mirror_msg)
@@ -160,6 +165,8 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
+            platform_message_id=message.get("platform_message_id"),
+            observed=bool(message.get("observed")),
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)
