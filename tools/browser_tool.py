@@ -2288,6 +2288,19 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 # Browser Tool Functions
 # ============================================================================
 
+def _available_memory_mb() -> Optional[int]:
+    """Best-effort MemAvailable (MB) from /proc/meminfo. Returns None when
+    unavailable (non-Linux or read error) so callers fail open."""
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as _f:
+            for _line in _f:
+                if _line.startswith("MemAvailable:"):
+                    return int(_line.split()[1]) // 1024
+    except Exception:
+        return None
+    return None
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -2332,6 +2345,37 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     effective_task_id = task_id or "default"
     nav_session_key = _navigation_session_key(effective_task_id, url)
     auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
+
+    # Low-memory guard: a *cold* browser start spawns Chromium (~300-400MB).
+    # On a tiny host (e.g. a 1GB VPS) that can OOM-kill the gateway mid-task,
+    # so refuse only the cold start when free RAM is below
+    # HERMES_BROWSER_MIN_AVAIL_MB (default 350) and steer the agent to the
+    # lighter fetch tools. Reusing an already-open session is always allowed.
+    # Fail-safe: any error reading memory leaves the browser enabled.
+    try:
+        _is_cold_start = (
+            nav_session_key not in _active_sessions
+            and effective_task_id not in _active_sessions
+        )
+        if _is_cold_start:
+            _min_avail_mb = int(os.environ.get("HERMES_BROWSER_MIN_AVAIL_MB", "350") or "350")
+            _avail_mb = _available_memory_mb()
+            if _avail_mb is not None and _avail_mb < _min_avail_mb:
+                logger.warning(
+                    "browser_navigate: refusing cold browser start, %sMB free < %sMB min "
+                    "(set HERMES_BROWSER_MIN_AVAIL_MB to tune)",
+                    _avail_mb, _min_avail_mb,
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Browser unavailable: only {_avail_mb}MB RAM free (need ~{_min_avail_mb}MB "
+                        f"to launch Chromium safely on this host). Use web_extract to read this "
+                        f"page's content, or web_search, instead of the browser."
+                    ),
+                })
+    except Exception:
+        pass
 
     # Always-blocked floor: cloud metadata / IMDS endpoints are denied
     # regardless of backend, hybrid routing, or allow_private_urls.
