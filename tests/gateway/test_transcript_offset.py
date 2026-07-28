@@ -323,3 +323,40 @@ class TestTranscriptHistoryOffset:
         )
 
         assert merged["history_offset"] == 3
+
+    def test_recursive_queued_followup_unions_history_media_snapshots(self):
+        """A nested turn keeps media paths that compaction removed from history."""
+        current_result = {
+            "history_offset": 2,
+            "history_media_paths": {"/tmp/before-compaction.png"},
+        }
+        followup_result = {
+            "history_offset": 4,
+            "history_media_paths": {"/tmp/after-compaction.png"},
+        }
+
+        merged = _preserve_queued_followup_history_offset(
+            current_result,
+            followup_result,
+        )
+
+        assert merged["history_media_paths"] == {
+            "/tmp/before-compaction.png",
+            "/tmp/after-compaction.png",
+        }
+
+    def test_recursive_queued_followup_preserves_empty_media_snapshot(self):
+        current_result = {
+            "history_offset": 2,
+            "history_media_paths": set(),
+        }
+        followup_result = {
+            "history_offset": 4,
+        }
+
+        merged = _preserve_queued_followup_history_offset(
+            current_result,
+            followup_result,
+        )
+
+        assert merged["history_media_paths"] == set()

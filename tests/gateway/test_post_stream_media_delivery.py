@@ -144,3 +144,29 @@ async def test_explicit_media_document_still_delivers_post_stream(tmp_path, monk
         file_path=str(media_file),
         metadata={},
     )
+
+
+@pytest.mark.asyncio
+async def test_history_dedup_expands_home_relative_media_paths(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    media_file = _allowed_media_path(
+        tmp_path,
+        monkeypatch,
+        "report.pdf",
+    )
+    adapter = _adapter()
+    history_path = "~/media-cache/report.pdf"
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}),
+        f"Report attached.\nMEDIA:{history_path}",
+        _event(),
+        adapter,
+        history_media_paths={history_path},
+    )
+
+    assert str(media_file) == str(tmp_path / "media-cache" / "report.pdf")
+    adapter.send_document.assert_not_awaited()

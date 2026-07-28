@@ -1516,6 +1516,15 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
     """
     paths: set = set()
     tool_name_by_call_id: Dict[str, str] = {}
+
+    def _add_text_media_paths(content: str) -> None:
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('",}')
+            if path:
+                paths.add(path)
+        media_files, _ = BasePlatformAdapter.extract_media(content)
+        paths.update(path for path, _is_voice in media_files)
+
     for msg in agent_history:
         if msg.get("role") == "assistant":
             for call in msg.get("tool_calls") or []:
@@ -1529,19 +1538,13 @@ def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
         if role == "assistant":
             content = str(msg.get("content", "") or "")
             if "MEDIA:" in content:
-                for match in _TOOL_MEDIA_RE.finditer(content):
-                    p = match.group(1).strip().rstrip('",}')
-                    if p:
-                        paths.add(p)
+                _add_text_media_paths(content)
             continue
         if role not in {"tool", "function"}:
             continue
         content = str(msg.get("content", "") or "")
         if "MEDIA:" in content:
-            for match in _TOOL_MEDIA_RE.finditer(content):
-                p = match.group(1).strip().rstrip('",}')
-                if p:
-                    paths.add(p)
+            _add_text_media_paths(content)
             continue
         cid = str(msg.get("tool_call_id") or msg.get("call_id") or "")
         if tool_name_by_call_id.get(cid) == "image_generate":
@@ -3244,7 +3247,7 @@ def _preserve_queued_followup_history_offset(
     current_result: dict,
     followup_result: dict,
 ) -> dict:
-    """Carry the outer history offset through queued follow-up drains.
+    """Carry outer history state through queued follow-up drains.
 
     ``_process_message_background()`` persists transcript rows only once, after the
     entire in-band queued-follow-up chain returns.  Each recursive ``_run_agent()``
@@ -3254,6 +3257,10 @@ def _preserve_queued_followup_history_offset(
 
     Preserve the earliest (outermost) history offset so the final transcript slice
     still includes every queued turn that ran during the chain.
+
+    History media snapshots are cumulative across the same chain. A recursive
+    turn can receive compacted history that no longer contains an older media
+    path, so union its snapshot with the outer turn's snapshot.
     """
     if not isinstance(followup_result, dict):
         return followup_result
@@ -3262,13 +3269,34 @@ def _preserve_queued_followup_history_offset(
 
     current_offset = current_result.get("history_offset")
     followup_offset = followup_result.get("history_offset")
-    if not isinstance(current_offset, int):
-        return followup_result
-    if isinstance(followup_offset, int) and followup_offset <= current_offset:
+    preserve_offset = (
+        isinstance(current_offset, int)
+        and not (
+            isinstance(followup_offset, int)
+            and followup_offset <= current_offset
+        )
+    )
+    current_media_paths = current_result.get("history_media_paths")
+    followup_media_paths = followup_result.get("history_media_paths")
+    preserve_media_paths = (
+        isinstance(current_media_paths, set)
+        and (
+            not isinstance(followup_media_paths, set)
+            or bool(current_media_paths - followup_media_paths)
+        )
+    )
+    if not preserve_offset and not preserve_media_paths:
         return followup_result
 
     merged = dict(followup_result)
-    merged["history_offset"] = current_offset
+    if preserve_offset:
+        merged["history_offset"] = current_offset
+    if preserve_media_paths:
+        merged["history_media_paths"] = current_media_paths | (
+            followup_media_paths
+            if isinstance(followup_media_paths, set)
+            else set()
+        )
     return merged
 
 
@@ -15017,9 +15045,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
+                        _history_media_paths = agent_result.get(
+                            "history_media_paths"
+                        )
+                        if _history_media_paths is None:
+                            _history_media_paths = _collect_history_media_paths(
+                                history
+                            )
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
-                            history_media_paths=_collect_history_media_paths(history),
+                            history_media_paths=_history_media_paths,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -16156,10 +16191,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the model may echo a previous turn's MEDIA: tag in a later
             # response; without this guard the same file is re-sent.
             if history_media_paths:
+                def _canonical_media_path(path: Any) -> str:
+                    try:
+                        return os.path.normcase(
+                            os.path.normpath(os.path.expanduser(str(path)))
+                        )
+                    except (OSError, RuntimeError, ValueError):
+                        return str(path)
+
+                _canonical_history_media_paths = {
+                    _canonical_media_path(path)
+                    for path in history_media_paths
+                }
                 media_files = [
                     (path, is_voice)
                     for path, is_voice in media_files
-                    if path not in history_media_paths
+                    if (
+                        _canonical_media_path(path)
+                        not in _canonical_history_media_paths
+                    )
                 ]
             # Strip image URLs from the cleaned text for parity with the
             # non-streaming chain, but do NOT run extract_local_files here:
@@ -23083,6 +23133,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "compression_deferred": result.get("compression_deferred", False),
                     "tools": tools_holder[0] or [],
                     "history_offset": _effective_history_offset,
+                    "history_media_paths": _history_media_paths,
                     "compacted_in_place": _compacted_in_place,
                     "session_id": effective_session_id,
                     "last_prompt_tokens": _last_prompt_toks,
@@ -23211,6 +23262,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
+                "history_media_paths": _history_media_paths,
                 "compacted_in_place": _compacted_in_place,
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
@@ -23731,6 +23783,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
+            current_result = (
+                response
+                if isinstance(response, dict)
+                else (result or {"final_response": response, "messages": history})
+            )
             adapter = self._adapter_for_source(source)
 
             # Finalize the streaming-TTS consumer (#60671).
@@ -23871,7 +23928,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
-                    return result_holder[0] or {"final_response": response, "messages": history}
+                    return current_result
 
                 was_interrupted = result.get("interrupted")
                 if not was_interrupted:
@@ -23895,7 +23952,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # finalized task result. The latter contains empty/failure
                     # normalization and any final response processing applied by
                     # _run_agent_task; sending the raw copy bypasses those steps.
-                    _delivery_result = response if isinstance(response, dict) else (result or {})
+                    _delivery_result = current_result
                     _previewed = bool(_delivery_result.get("response_previewed"))
                     first_response = _delivery_result.get("final_response", "")
                     _already_streamed = _stream_confirmed_final_delivery(
@@ -23982,7 +24039,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Discarding stale goal continuation for session %s — goal is no longer active",
                             session_key or "?",
                         )
-                        return result
+                        return current_result
                     # Resolve the follow-up's session key BEFORE preparing the
                     # inbound text: _prepare_inbound_message_text buffers native
                     # image paths under the key it is given, and the recursive
@@ -24003,7 +24060,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=next_session_key,
                     )
                     if next_message is None:
-                        return result
+                        return current_result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
@@ -24063,7 +24120,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,
                 )
-                return _preserve_queued_followup_history_offset(result, followup_result)
+                return _preserve_queued_followup_history_offset(
+                    current_result,
+                    followup_result,
+                )
         finally:
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:

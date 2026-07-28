@@ -216,20 +216,19 @@ async def test_not_new_messages_skip_db_when_agent_has_session_db(
 
 
 @pytest.mark.asyncio
-async def test_streamed_response_receives_prior_turn_media_paths(
+async def test_streamed_response_prefers_selected_agent_history_media_paths(
     monkeypatch, tmp_path
 ):
-    """An ordinary streamed reply completes the post-stream delivery branch.
+    """Post-stream delivery uses the history selected by the agent run.
 
-    The history-derived dedup set is part of that branch's contract, rather
-    than an optional best-effort hint: passing an undefined local crashes the
-    entire reply, while passing an empty set reintroduces duplicate MEDIA
-    attachments on later streamed responses.
+    The persisted transcript can lag the cached agent history after FTS
+    corruption. The result snapshot must win so media found only in the live
+    history is not delivered again.
     """
     runner = _bootstrap(monkeypatch, tmp_path)
     prior_path = "/tmp/already-delivered.png"
     runner.session_store.load_transcript.return_value = [
-        {"role": "assistant", "content": f"MEDIA:{prior_path}"},
+        {"role": "assistant", "content": "short persisted history"},
     ]
     runner.adapters = {Platform.TELEGRAM: MagicMock()}
     runner._deliver_media_from_response = AsyncMock()
@@ -241,6 +240,41 @@ async def test_streamed_response_receives_prior_turn_media_paths(
                 {"role": "user", "content": "what is my status?"},
                 {"role": "assistant", "content": "the streamed reply completed normally"},
             ],
+            "tools": [],
+            "history_offset": 0,
+            "history_media_paths": {prior_path},
+            "last_prompt_tokens": 0,
+            "already_sent": True,
+            "failed": False,
+        }
+    )
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert response is None
+    runner._deliver_media_from_response.assert_awaited_once()
+    assert runner._deliver_media_from_response.await_args.kwargs[
+        "history_media_paths"
+    ] == {prior_path}
+
+
+@pytest.mark.asyncio
+async def test_streamed_response_falls_back_to_persisted_history_media_paths(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    prior_path = "/tmp/persisted-history.png"
+    runner.session_store.load_transcript.return_value = [
+        {"role": "assistant", "content": f"MEDIA:{prior_path}"},
+    ]
+    runner.adapters = {Platform.TELEGRAM: MagicMock()}
+    runner._deliver_media_from_response = AsyncMock()
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "streamed response",
+            "messages": [],
             "tools": [],
             "history_offset": 1,
             "last_prompt_tokens": 0,
@@ -254,7 +288,6 @@ async def test_streamed_response_receives_prior_turn_media_paths(
     )
 
     assert response is None
-    runner._deliver_media_from_response.assert_awaited_once()
     assert runner._deliver_media_from_response.await_args.kwargs[
         "history_media_paths"
     ] == {prior_path}
