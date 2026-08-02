@@ -9124,6 +9124,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             _m()._verify_console_scripts_installed(install_prefix, env=lazy_env)
 
+        # Lockfile-only security bumps (``fix(sec)`` commits that move a
+        # transitive dependency to a patched release in uv.lock) never reach
+        # an existing venv through the editable reinstall above, because that
+        # resolve reads pyproject.toml constraints and the already-installed
+        # version still satisfies them. Align any drifted installed packages
+        # with the locked resolution while the core-install breadcrumb still
+        # covers an interrupted run.
+        _m()._align_installed_packages_with_lockfile(install_prefix, env=lazy_env)
+
         # Core ``.[all]`` install finished. Clear the generic core breadcrumb
         # before the lazy-refresh phase — that phase uses its own marker so a
         # later lazy failure cannot be "healed" by clearing the core marker
