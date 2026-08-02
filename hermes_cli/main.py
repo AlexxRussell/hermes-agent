@@ -8464,6 +8464,7 @@ def _install_python_dependencies_with_optional_fallback(
     try:
         _install(["install", "-e", f".[{group}]"])
         _verify_console_scripts_installed(install_cmd_prefix, env=env)
+        _align_installed_packages_with_lockfile(install_cmd_prefix, env=env)
         return
     except subprocess.CalledProcessError:
         print(
@@ -8502,6 +8503,12 @@ def _install_python_dependencies_with_optional_fallback(
     # downstream.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
     _verify_console_scripts_installed(install_cmd_prefix, env=env)
+    # Shared reinstall boundary: every route that reinstalls dependencies
+    # (git update, ZIP update, interrupted-install recovery) funnels through
+    # this function, so aligning here guarantees lockfile-only security bumps
+    # land no matter which route ran. Placed last so the verification repair
+    # reinstalls above cannot re-drift an aligned package.
+    _align_installed_packages_with_lockfile(install_cmd_prefix, env=env)
 
 
 def _canonical_package_name(name: str) -> str:
@@ -8612,9 +8619,12 @@ def _align_installed_packages_with_lockfile(
 ) -> None:
     """Bring installed packages that drifted from ``uv.lock`` to locked versions.
 
-    Follows the same non-fatal contract as the optional-extras fallback in
-    :func:`_install_python_dependencies_with_optional_fallback`: any failure
-    prints a warning and returns, leaving the install as it was.
+    Runs at the end of every successful reinstall inside
+    :func:`_install_python_dependencies_with_optional_fallback`, which is the
+    shared boundary for the git update path, the ZIP update path, and the
+    interrupted-install recovery. Follows the same non-fatal contract as the
+    optional-extras fallback there: any failure prints a warning and returns,
+    leaving the install as it was.
     """
     pins = _collect_lockfile_pins(PROJECT_ROOT)
     if not pins:

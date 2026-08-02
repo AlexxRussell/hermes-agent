@@ -115,6 +115,94 @@ def test_align_no_op_without_lockfile(tmp_path, monkeypatch):
     m._align_installed_packages_with_lockfile(["uv", "pip"])
 
 
+def _neutralize_install_machinery(monkeypatch, align_calls, install_calls=None):
+    """Stub the subprocess-heavy pieces under the shared reinstall boundary."""
+
+    def fake_install(cmd, *, env=None, scripts_dir=None):
+        if install_calls is not None:
+            install_calls.append(cmd)
+
+    monkeypatch.setattr(m, "_run_quarantined_install", fake_install)
+    monkeypatch.setattr(
+        m, "_verify_core_dependencies_installed", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        m, "_verify_console_scripts_installed", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        m,
+        "_align_installed_packages_with_lockfile",
+        lambda prefix, *, env=None: align_calls.append(list(prefix)),
+    )
+
+
+def test_boundary_aligns_after_happy_path_install(monkeypatch):
+    align_calls: list[list[str]] = []
+    _neutralize_install_machinery(monkeypatch, align_calls)
+
+    m._install_python_dependencies_with_optional_fallback(["uv", "pip"])
+    assert align_calls == [["uv", "pip"]]
+
+
+def test_boundary_aligns_after_extras_fallback_path(monkeypatch):
+    align_calls: list[list[str]] = []
+    install_calls: list[list[str]] = []
+    _neutralize_install_machinery(monkeypatch, align_calls, install_calls)
+    monkeypatch.setattr(
+        m, "_load_installable_optional_extras", lambda group="all": ["voice"]
+    )
+
+    state = {"first": True}
+
+    def flaky_install(cmd, *, env=None, scripts_dir=None):
+        install_calls.append(cmd)
+        if state["first"]:
+            state["first"] = False
+            raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(m, "_run_quarantined_install", flaky_install)
+
+    m._install_python_dependencies_with_optional_fallback(["uv", "pip"])
+    # The .[all] attempt failed, base and extras were reinstalled, and the
+    # alignment boundary still ran exactly once at the end.
+    assert install_calls[0] == ["uv", "pip", "install", "-e", ".[all]"]
+    assert ["uv", "pip", "install", "-e", "."] in install_calls
+    assert align_calls == [["uv", "pip"]]
+
+
+def test_recovery_route_reaches_alignment_and_clears_marker(
+    tmp_path, monkeypatch
+):
+    """Core-marker recovery runs the real shared installer, so alignment
+    happens before the ``.update-incomplete`` breadcrumb is cleared."""
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    m._write_update_incomplete_marker()
+    marker = tmp_path / ".update-incomplete"
+    assert marker.exists()
+
+    align_calls: list[list[str]] = []
+    _neutralize_install_machinery(monkeypatch, align_calls)
+    monkeypatch.setattr(
+        m, "_windows_running_hermes_launcher_locked", lambda: False
+    )
+
+    import hermes_cli.managed_uv as managed_uv
+
+    monkeypatch.setattr(managed_uv, "ensure_uv", lambda: None)
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(
+        m.subprocess, "run", lambda *a, **k: _Done(), raising=True
+    )
+
+    m._recover_core_update_marker_locked()
+
+    assert len(align_calls) == 1
+    assert not marker.exists()
+
+
 def test_align_is_non_fatal_on_install_failure(tmp_path, monkeypatch, capsys):
     _write_lock(tmp_path)
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
