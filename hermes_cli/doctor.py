@@ -1025,6 +1025,17 @@ def _build_apikey_providers_list() -> list:
     return _static
 
 
+def _find_orphan_profile_aliases() -> list[tuple[str, str]]:
+    """Return ``(alias, profile)`` pairs whose target profile is missing."""
+    from hermes_cli.profiles import build_alias_map, profile_exists
+
+    return sorted(
+        (alias, profile)
+        for profile, alias in build_alias_map().items()
+        if not profile_exists(profile)
+    )
+
+
 def managed_scope_check() -> None:
     """Report the active managed scope (resolved dir + pinned key counts).
 
@@ -3345,8 +3356,7 @@ def run_doctor(args):
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     try:
-        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-        import re as _re
+        from hermes_cli.profiles import list_profiles, _get_wrapper_dir
 
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:
@@ -3369,19 +3379,12 @@ def run_doctor(args):
                 status = ", ".join(parts) if parts else "configured"
                 check_ok(f"  {p.name}: {status}")
 
-            # Check for orphan wrappers
-            if wrapper_dir.is_dir():
-                for wrapper in wrapper_dir.iterdir():
-                    if not wrapper.is_file():
-                        continue
-                    try:
-                        content = wrapper.read_text(encoding="utf-8")
-                        if "hermes -p" in content:
-                            _m = _re.search(r"hermes -p (\S+)", content)
-                            if _m and not profile_exists(_m.group(1)):
-                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
-                    except Exception:
-                        pass
+            # Check for orphan wrappers with the same bounded scanner used by
+            # profile listing. Never read arbitrary wrapper-dir entries whole.
+            for alias, profile in _find_orphan_profile_aliases():
+                check_warn(
+                    f"Orphan alias: {alias} → profile '{profile}' no longer exists"
+                )
     except ImportError:
         pass
     except Exception:
