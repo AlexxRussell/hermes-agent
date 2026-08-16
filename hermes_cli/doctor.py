@@ -870,12 +870,18 @@ def _build_apikey_providers_list() -> list:
 
 
 def _find_orphan_profile_aliases() -> list[tuple[str, str]]:
-    """Return ``(alias, profile)`` pairs whose target profile is missing."""
-    from hermes_cli.profiles import build_alias_map, profile_exists
+    """Return ``(alias, profile)`` pairs whose target profile is missing.
+
+    Iterates wrappers rather than the profile-keyed alias map so that every
+    stranded wrapper is reported. Removing a profile that had a custom alias
+    leaves two files behind, and naming only one of them hides the other
+    until the user runs Doctor again.
+    """
+    from hermes_cli.profiles import iter_wrapper_aliases, profile_exists
 
     return sorted(
         (alias, profile)
-        for profile, alias in build_alias_map().items()
+        for alias, profile in iter_wrapper_aliases()
         if not profile_exists(profile)
     )
 
