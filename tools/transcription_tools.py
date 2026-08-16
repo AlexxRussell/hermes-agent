@@ -3036,10 +3036,19 @@ _STT_PROMPT_ECHO_MIN_CHARS = 25
 
 
 def _normalize_for_prompt_echo(text: str) -> str:
-    """Fold to letters and digits only: lowercase, accent stripped, single spaced."""
+    """Fold to letters and digits of any script: lowercase, accent stripped, single spaced.
+
+    Script agnostic deliberately. Keeping only ``[a-z0-9]`` would reduce a CJK
+    transcript and a CJK prompt to two empty strings, which reads as "not an
+    echo" and would silently disable the guard for every non-Latin script.
+    Note that _STT_PROMPT_ECHO_MIN_CHARS counts characters, so a dense script
+    needs a longer utterance to clear the floor. That errs toward not flagging,
+    which is the safe direction.
+    """
     folded = unicodedata.normalize("NFKD", (text or "").lower())
-    folded = "".join(c for c in folded if not unicodedata.combining(c))
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", folded)).strip()
+    kept = [c if c.isalnum() else " "
+            for c in folded if not unicodedata.combining(c)]
+    return re.sub(r"\s+", " ", "".join(kept)).strip()
 
 
 def _is_stt_prompt_echo(transcript: Optional[str], prompt: Optional[str]) -> bool:

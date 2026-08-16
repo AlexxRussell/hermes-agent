@@ -25,6 +25,7 @@ stubbed, and no live model is loaded.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from tools import transcription_tools
@@ -157,6 +158,48 @@ class TestGuardDoesNotOverTrigger:
         calls = client.audio.transcriptions.create.call_args_list
         assert len(calls) == 1
         assert "prompt" not in calls[0].kwargs
+
+
+class TestGuardIsScriptAgnostic:
+    def test_cjk_echo_is_retried(self, monkeypatch, tmp_path):
+        """An echo in a non-Latin script is still an echo.
+
+        Normalization folds to alphanumerics, so a filter that only kept
+        [a-z0-9] would reduce both sides to empty and silently disable the
+        guard for CJK, Cyrillic, Greek and every other non-Latin script.
+        """
+        prompt = "季度评审会议记录：遥测数据、背压控制、尾部分位数、树状数组、缓存命中率。"
+        echo = "季季度评审会议记录：遥测数据、背压控制、尾部分位数、树状数组、缓存命中率。"
+        speech = "请帮我总结一下遥测部分的内容然后发给我"
+        client = _groq_client(echo, speech)
+
+        result = _run_groq(monkeypatch, tmp_path, client, {
+            "provider": "groq", "prompt": prompt,
+        })
+
+        assert result["transcript"] == speech
+        calls = client.audio.transcriptions.create.call_args_list
+        assert len(calls) == 2
+        assert "prompt" not in calls[1].kwargs
+
+
+class TestObservability:
+    def test_discarded_transcript_is_logged_at_warning(
+        self, monkeypatch, tmp_path, caplog,
+    ):
+        """The discard path must stay visible; a silent drop is unexplainable."""
+        client = _groq_client(ECHO, ECHO)
+
+        with caplog.at_level(logging.WARNING, logger="tools.transcription_tools"):
+            result = _run_groq(monkeypatch, tmp_path, client, {
+                "provider": "groq", "prompt": PROMPT,
+            })
+
+        assert result["transcript"] == ""
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno >= logging.WARNING]
+        assert any("retrying once without prompt biasing" in m for m in warnings)
+        assert any("discarding the" in m for m in warnings)
 
 
 class TestGuardIsProviderAgnostic:
