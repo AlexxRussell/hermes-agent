@@ -181,3 +181,57 @@ def test_binary_entry_is_skipped(alias_scan_env, monkeypatch, tmp_path, capsys):
     _run_doctor(monkeypatch, tmp_path, profiles_root)
 
     assert "Orphan alias: binary-entry" not in capsys.readouterr().out
+
+
+def test_every_dangling_wrapper_is_reported(
+    alias_scan_env, monkeypatch, tmp_path, capsys
+):
+    """Each dangling wrapper gets its own warning, not one per profile.
+
+    Adding a custom alias leaves both the profile-named wrapper and the alias
+    wrapper on disk, so removing the profile strands two files. Reporting only
+    one of them hides the other until the user re-runs Doctor.
+    """
+    wrapper_dir, profiles_root = alias_scan_env
+    _write_wrapper(wrapper_dir, "work", "work")
+    _write_wrapper(wrapper_dir, "w", "work")
+
+    _run_doctor(monkeypatch, tmp_path, profiles_root)
+
+    output = capsys.readouterr().out
+    reported = [line for line in output.splitlines() if "Orphan alias:" in line]
+    assert len(reported) == 2, reported
+    assert "Orphan alias: w → profile 'work' no longer exists" in output
+    assert "Orphan alias: work → profile 'work' no longer exists" in output
+
+
+def test_mixed_case_target_reports_the_canonical_profile_id(
+    alias_scan_env, monkeypatch, tmp_path, capsys
+):
+    """A hand-edited target is reported under the id profiles use on disk.
+
+    Profile directories are lowercase, so the canonical id is the one the user
+    would type to inspect or recreate the profile.
+    """
+    wrapper_dir, profiles_root = alias_scan_env
+    _write_wrapper(wrapper_dir, "cased", "Ghost")
+
+    _run_doctor(monkeypatch, tmp_path, profiles_root)
+
+    assert (
+        "Orphan alias: cased → profile 'ghost' no longer exists"
+        in capsys.readouterr().out
+    )
+
+
+def test_case_never_decides_whether_a_profile_is_missing(
+    alias_scan_env, monkeypatch, tmp_path, capsys
+):
+    """A mixed-case target resolving to a live profile is not an orphan."""
+    wrapper_dir, profiles_root = alias_scan_env
+    (profiles_root / "present-profile").mkdir()
+    _write_wrapper(wrapper_dir, "cased-live", "Present-Profile")
+
+    _run_doctor(monkeypatch, tmp_path, profiles_root)
+
+    assert "Orphan alias: cased-live" not in capsys.readouterr().out
