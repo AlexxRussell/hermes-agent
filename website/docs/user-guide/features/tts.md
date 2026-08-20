@@ -70,6 +70,8 @@ tts:
     #                           # MiniMax infers the most natural emotion per request
     #                           # from the text itself. Set "neutral" to keep the flat
     #                           # delivery Hermes produced before this default was fixed.
+    #                           # Any other value is still sent as configured, with a
+    #                           # warning in the log, since MiniMax owns this list.
     # base_url: "https://tts.example/v1/t2a_v2"  # Optional endpoint override for the selected region
   mistral:
     model: "voxtral-mini-tts-2603"
