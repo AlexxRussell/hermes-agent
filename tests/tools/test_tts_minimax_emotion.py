@@ -17,6 +17,8 @@ at module top, so collection succeeds on an unfixed tree and the helper tests
 fail at runtime instead of blocking the whole file.
 """
 
+import logging
+
 import pytest
 
 import requests
@@ -110,3 +112,98 @@ class TestWirePayload:
             _generate_minimax_tts("hello", str(tmp_path / "clip.mp3"), cfg)
 
         assert captured["payload"]["voice_setting"]["emotion"] == configured
+
+
+class TestUnrecognizedEmotion:
+    """An emotion the API will not recognize must be visible in the logs.
+
+    Before this, a typo like "happpy" was folded to lowercase and posted
+    verbatim, so the only symptom was an opaque MiniMax API error with
+    nothing pointing at the config that caused it.
+
+    The value is still sent rather than dropped. MiniMax owns this enum and
+    can extend it, and silently discarding a value the operator wrote is the
+    same class of bug as the hardcoded "neutral" this PR removes: Hermes
+    overriding stated intent. A warning names the offending value, so the
+    failure diagnoses itself either way.
+    """
+
+    def test_unrecognized_value_warns_and_is_still_sent(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+            setting = tts_tool._minimax_voice_setting({"emotion": "happpy"})
+
+        assert setting["emotion"] == "happpy"
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "happpy" in warnings[0]
+        assert "tts.minimax.emotion" in warnings[0]
+
+    @pytest.mark.parametrize("value", [
+        "happy", "sad", "angry", "fearful", "disgusted", "surprised", "calm",
+        "neutral", "Happy", "  CALM  ",
+    ])
+    def test_recognized_values_do_not_warn(self, caplog, value):
+        """Includes "neutral": the documented way back to the old delivery."""
+        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+            setting = tts_tool._minimax_voice_setting({"emotion": value})
+
+        assert setting["emotion"] == value.strip().lower()
+        assert [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING] == []
+
+    @pytest.mark.parametrize("value", ["", None, "auto", "  Auto  "])
+    def test_deliberate_omission_does_not_warn(self, caplog, value):
+        """Omitting the field is the intended default, not a mistake."""
+        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+            setting = tts_tool._minimax_voice_setting({"emotion": value})
+
+        assert "emotion" not in setting
+        assert [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING] == []
+
+    def test_non_string_value_warns(self, caplog):
+        """A numeric emotion stringifies, so it needs the same warning."""
+        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+            setting = tts_tool._minimax_voice_setting({"emotion": 5})
+
+        assert setting["emotion"] == "5"
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "5" in warnings[0]
+
+
+class TestFlatEndpointPayload:
+    """Regression guard for the legacy v1/text_to_speech payload.
+
+    That branch is the only consumer of the function local voice_id, and it
+    builds a flat payload with no voice_setting at all, so it is easy to read
+    the local as dead once the nested payload moved into a helper. Deleting it
+    raises NameError on the first request to a text_to_speech endpoint. These
+    tests fail loudly if that happens.
+    """
+
+    FLAT_URL = "https://api.minimax.io/v1/text_to_speech"
+
+    def _capture(self, monkeypatch, tmp_path, minimax_config):
+        captured = {}
+        monkeypatch.setattr(requests, "post", _capture_post(captured))
+        with pytest.raises(_RequestCaptured):
+            _generate_minimax_tts("hello", str(tmp_path / "clip.mp3"),
+                                  {"minimax": minimax_config})
+        return captured
+
+    def test_flat_payload_carries_configured_voice_id(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path,
+                                 {"base_url": self.FLAT_URL, "voice_id": "v1"})
+
+        assert captured["url"] == self.FLAT_URL
+        assert captured["payload"]["voice_id"] == "v1"
+        assert "voice_setting" not in captured["payload"]
+
+    def test_flat_payload_falls_back_to_default_voice_id(self, monkeypatch, tmp_path):
+        captured = self._capture(monkeypatch, tmp_path,
+                                 {"base_url": self.FLAT_URL})
+
+        assert captured["payload"]["voice_id"] == DEFAULT_MINIMAX_VOICE_ID
