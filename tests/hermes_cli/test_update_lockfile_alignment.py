@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 import hermes_cli.main as m
 
 LOCK = """
@@ -95,7 +97,7 @@ def test_align_runs_single_batched_install(tmp_path, monkeypatch):
         lambda prefix, *, env=None: {"httplib2": "0.31.2", "pynacl": "1.6.2"},
     )
 
-    def fake_install(cmd, *, env=None, scripts_dir=None):
+    def fake_install(cmd, *, env=None, scripts_dir=None, **_kw):
         calls.append(cmd)
 
     monkeypatch.setattr(m, "_run_quarantined_install", fake_install)
@@ -116,9 +118,15 @@ def test_align_no_op_without_lockfile(tmp_path, monkeypatch):
 
 
 def _neutralize_install_machinery(monkeypatch, align_calls, install_calls=None):
-    """Stub the subprocess-heavy pieces under the shared reinstall boundary."""
+    """Stub the subprocess-heavy pieces under the shared reinstall boundary.
 
-    def fake_install(cmd, *, env=None, scripts_dir=None):
+    The install doubles absorb unknown keywords. They stand in for
+    ``_run_quarantined_install``, whose signature grows over time (it gained
+    ``strict_quarantine`` in #87331), and pinning it here would fail the suite
+    for a change that has nothing to do with lockfile alignment.
+    """
+
+    def fake_install(cmd, *, env=None, scripts_dir=None, **_kw):
         if install_calls is not None:
             install_calls.append(cmd)
 
@@ -154,7 +162,7 @@ def test_boundary_aligns_after_extras_fallback_path(monkeypatch):
 
     state = {"first": True}
 
-    def flaky_install(cmd, *, env=None, scripts_dir=None):
+    def flaky_install(cmd, *, env=None, scripts_dir=None, **_kw):
         install_calls.append(cmd)
         if state["first"]:
             state["first"] = False
@@ -212,7 +220,7 @@ def test_align_is_non_fatal_on_install_failure(tmp_path, monkeypatch, capsys):
         lambda prefix, *, env=None: {"httplib2": "0.31.2"},
     )
 
-    def boom(cmd, *, env=None, scripts_dir=None):
+    def boom(cmd, *, env=None, scripts_dir=None, **_kw):
         raise subprocess.CalledProcessError(2, cmd)
 
     monkeypatch.setattr(m, "_run_quarantined_install", boom)
@@ -221,3 +229,63 @@ def test_align_is_non_fatal_on_install_failure(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Could not align packages with uv.lock" in out
     assert "exit 2" in out
+
+
+# ---------------------------------------------------------------------------
+# Alignment inherits the update sync's quarantine contract (#87331).
+#
+# Alignment runs inside _install_python_dependencies_with_optional_fallback,
+# which is the update dependency sync. A shim that cannot be renamed aside
+# proves a hard venv hold, so installing pinned versions anyway would strand
+# the venv between resolutions: exactly the half-updated state strict mode
+# exists to prevent.
+# ---------------------------------------------------------------------------
+
+def test_alignment_install_is_strictly_quarantined(tmp_path, monkeypatch):
+    _write_lock(tmp_path)
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        m,
+        "_list_installed_package_versions",
+        lambda prefix, *, env=None: {"httplib2": "0.31.2"},
+    )
+
+    seen = {}
+
+    def spy(cmd, *, env=None, scripts_dir=None, strict_quarantine=False):
+        seen["strict"] = strict_quarantine
+
+    monkeypatch.setattr(m, "_run_quarantined_install", spy)
+
+    m._align_installed_packages_with_lockfile(["uv", "pip"])
+
+    assert seen["strict"] is True, (
+        "a contended venv must not be mutated by the alignment install either"
+    )
+
+
+def test_shim_quarantine_refusal_is_not_softened_into_a_warning(
+    tmp_path, monkeypatch
+):
+    """A held venv defers the update; it does not 'keep current versions'.
+
+    Every other install failure is advisory here, because the venv is already
+    consistent and only the lockfile pins are missing. A quarantine refusal is
+    different: nothing was installed and the venv is held, so it has to reach
+    the sync boundary, which defers via the update-incomplete marker.
+    """
+    _write_lock(tmp_path)
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        m,
+        "_list_installed_package_versions",
+        lambda prefix, *, env=None: {"httplib2": "0.31.2"},
+    )
+
+    def refuse(cmd, *, env=None, scripts_dir=None, **_kw):
+        raise m.ShimQuarantineError(["hermes.exe"])
+
+    monkeypatch.setattr(m, "_run_quarantined_install", refuse)
+
+    with pytest.raises(m.ShimQuarantineError):
+        m._align_installed_packages_with_lockfile(["uv", "pip"])

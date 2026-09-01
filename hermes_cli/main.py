@@ -9314,6 +9314,24 @@ def _recover_core_update_marker_locked() -> None:
         # run_core_install's own redirect nests harmlessly.
         _ir.run_core_install(PROJECT_ROOT)
 
+        # The shared executor cannot own this step: alignment needs the uv
+        # resolution that _install_repair deliberately stays clear of, so that
+        # importing it can never fail in the corrupted-venv state it exists to
+        # repair. That means the boundary alignment in
+        # _install_python_dependencies_with_optional_fallback is bypassed on
+        # this route, and a recovery that reinstalled from pyproject
+        # constraints alone would clear the breadcrumb with the locked
+        # versions still undone. Align here instead, before the breadcrumb
+        # goes, so the guarantee holds on the recovery route too.
+        #
+        # The pre-import early pass is deliberately not covered. It is
+        # stdlib-only and runs before uv is importable; when it completes an
+        # install, the next ordinary update realigns at the normal boundary.
+        _recovery_prefix, _recovery_env = _default_venv_install_target()
+        _align_installed_packages_with_lockfile(
+            _recovery_prefix, env=_recovery_env
+        )
+
         _clear_update_incomplete_marker()
         print("✓ Dependency installation recovered — your install is healthy again.")
     except Exception as exc:
@@ -10445,12 +10463,23 @@ def _align_installed_packages_with_lockfile(
     print(f"  → Aligning {len(specs)} installed package(s) with uv.lock: {shown}")
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
     try:
+        # strict_quarantine: alignment runs inside the update dependency sync,
+        # so it inherits that boundary's rule (#87331). A shim that cannot be
+        # renamed aside proves a hard venv hold, and installing pinned
+        # versions anyway stranding the venv between resolutions is the exact
+        # half-updated state the strict mode exists to prevent.
         _run_quarantined_install(
             install_cmd_prefix + ["install", *specs],
             env=env,
             scripts_dir=scripts_dir,
+            strict_quarantine=True,
         )
         print(f"  ✓ Locked versions restored for {len(specs)} package(s)")
+    except ShimQuarantineError:
+        # Not ours to soften into a warning: the venv is held, nothing was
+        # installed, and the sync boundary defers via the update-incomplete
+        # marker so the next run retries from a clean state.
+        raise
     except Exception as e:
         detail = getattr(e, "returncode", None)
         suffix = f" (exit {detail})" if detail is not None else ""
