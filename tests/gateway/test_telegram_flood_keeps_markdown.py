@@ -10,9 +10,11 @@ It also fired on flood control, because the helper caught bare ``Exception``. A
 was perfectly valid arrived with its syntax showing: headings as a literal ``##``,
 links as a literal ``[text](url)``. The outer handler in ``edit_message`` was
 already written for flood control (short waits retry inline, long waits fail
-closed so streaming falls back to a normal final send) but could never run while
-the helper swallowed the exception first. And even when it did run, the inline
-retry re-sent the RAW content, so the user saw the markdown syntax anyway.
+closed so streaming falls back to a normal final send) but rarely ran, because
+the helper swallowed the flood exception first (its own plain-text rescue could
+itself be flood-refused into the outer handler, but only after the downgrade).
+And on the path where it did run, the inline retry re-sent the RAW content, so
+the user saw the markdown syntax anyway.
 
 The guard is deliberately narrow: timeouts and network blips keep the plain-text
 rescue, because re-raising them would return ``retryable=True`` and the stream
