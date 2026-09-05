@@ -1,4 +1,4 @@
-"""A gateway child that cannot get a restart-safe systemd scope is dispatched directly, not refused.
+"""A gateway child that cannot get a restart-safe systemd scope is run unwrapped, not refused.
 
 ``restart_safe_gateway_child_argv`` failed closed whenever ``systemd-run --user --scope`` was
 unavailable to a systemd-supervised gateway. That is the normal state of a root system unit
@@ -8,10 +8,11 @@ containers without a user session), so every cron dispatch on such a host failed
 5 Sep 2026 a 1 GB Ubuntu 22.04 box lost its finance watchdogs, self-check and Schengen
 watchdog for hours this way.
 
-Now the child is dispatched as a plain subprocess (the behaviour before the scope was
-introduced) with a WARNING that names the unit and the remedy; the hard failure stays
-available behind ``HERMES_GATEWAY_CHILD_REQUIRE_SCOPE=1`` (cron-scope-degrade). The tests
-force the Linux branch so the contract is checked on every platform.
+Now the command comes back unchanged with a WARNING that names the unit and the remedy, and
+the caller keeps its pre-scope dispatch: the cron scheduler declines the external handoff and
+``run_one_job`` continues in-process, exactly as before the scope existed. The hard failure
+stays available behind ``HERMES_GATEWAY_CHILD_REQUIRE_SCOPE=1``. Linux only, like the code
+path: the scope is a systemd construct.
 """
 
 from __future__ import annotations
@@ -23,13 +24,14 @@ import pytest
 
 import tools.process_registry as process_registry
 
+pytestmark = pytest.mark.linux_only
+
 COMMAND = ["python", "-m", "cron.scheduler", "--external-worker-file", "payload.json"]
 
 
 @pytest.fixture
 def managed_gateway(monkeypatch):
-    """A systemd-supervised Linux gateway whose user scope probe fails."""
-    monkeypatch.setattr(process_registry, "_IS_LINUX", True)
+    """A systemd-supervised gateway whose user scope probe fails."""
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
@@ -39,7 +41,8 @@ def managed_gateway(monkeypatch):
 
 def test_degrades_to_the_plain_command_with_a_warning(managed_gateway, caplog):
     with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
-        result = process_registry.restart_safe_gateway_child_argv(COMMAND, unit_suffix="cron-job-1-exec-9")
+        result = process_registry.restart_safe_gateway_child_argv(
+            COMMAND, unit_suffix="cron-job-1-exec-9")
 
     assert result is COMMAND
     (record,) = [r for r in caplog.records if "restart-safe cgroup isolation" in r.getMessage()]
@@ -60,15 +63,18 @@ def test_fails_closed_when_the_operator_asks_for_it(managed_gateway):
 def test_only_the_literal_one_means_fail_closed(managed_gateway, value):
     managed_gateway.setenv(process_registry._GATEWAY_CHILD_REQUIRE_SCOPE_ENV, value)
 
-    assert process_registry.restart_safe_gateway_child_argv(COMMAND, unit_suffix="cron-job-1") is COMMAND
+    assert process_registry.restart_safe_gateway_child_argv(
+        COMMAND, unit_suffix="cron-job-1") is COMMAND
 
 
 def test_a_scope_that_vanishes_after_the_probe_degrades_too(managed_gateway, caplog):
     managed_gateway.setattr(process_registry, "_systemd_run_user_scope_available", lambda: True)
-    managed_gateway.setattr(process_registry, "_build_systemd_scope_argv", lambda command, unit_suffix: command)
+    managed_gateway.setattr(
+        process_registry, "_build_systemd_scope_argv", lambda command, unit_suffix: command)
 
     with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
-        assert process_registry.restart_safe_gateway_child_argv(COMMAND, unit_suffix="cron-job-2") is COMMAND
+        assert process_registry.restart_safe_gateway_child_argv(
+            COMMAND, unit_suffix="cron-job-2") is COMMAND
     assert "systemd-run disappeared after the availability probe" in caplog.text
 
     managed_gateway.setenv(process_registry._GATEWAY_CHILD_REQUIRE_SCOPE_ENV, "1")
@@ -80,7 +86,8 @@ def test_an_available_scope_is_still_used(managed_gateway):
     managed_gateway.setattr(process_registry, "_systemd_run_user_scope_available", lambda: True)
     managed_gateway.setattr(
         process_registry, "_build_systemd_scope_argv",
-        lambda command, unit_suffix: ["systemd-run", "--user", "--scope", "--unit", unit_suffix, "--", *command])
+        lambda command, unit_suffix: [
+            "systemd-run", "--user", "--scope", "--unit", unit_suffix, "--", *command])
 
     scoped = process_registry.restart_safe_gateway_child_argv(COMMAND, unit_suffix="cron-job-3")
 
@@ -88,15 +95,19 @@ def test_an_available_scope_is_still_used(managed_gateway):
     assert scoped[-len(COMMAND):] == COMMAND
 
 
-def test_the_scheduler_runs_the_job_in_process_when_the_child_argv_is_unchanged(managed_gateway, caplog):
-    """The scheduler hands off only when the argv was wrapped; a degraded child stays in-process."""
+def test_the_scheduler_declines_the_external_handoff_when_the_argv_is_unchanged(
+        managed_gateway, caplog):
+    """``_launch_external_cron_worker`` hands off only when the argv was wrapped. A degraded child
+    is declined (no worker process is started) and ``run_one_job`` then runs the job in-process,
+    which is the scheduler's existing contract for a declined handoff and is not exercised here."""
     import cron.scheduler as scheduler
 
     popen = Mock()
     managed_gateway.setattr(scheduler.subprocess, "Popen", popen)
 
     with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
-        handed_off = scheduler._launch_external_cron_worker({"id": "job-1", "execution_id": "exec-1"})
+        handed_off = scheduler._launch_external_cron_worker(
+            {"id": "job-1", "execution_id": "exec-1"})
 
     assert handed_off is False
     popen.assert_not_called()
