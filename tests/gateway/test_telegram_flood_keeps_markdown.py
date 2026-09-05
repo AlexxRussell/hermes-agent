@@ -159,7 +159,7 @@ def _edit(adapter, content: str = CONTENT):
 
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
-    """Inline flood retries sleep for the requested wait; keep the suite fast but record the waits."""
+    """Inline flood retries sleep for the requested wait; keep the suite fast, record the waits."""
     slept: list[float] = []
 
     async def _record(delay):
@@ -261,7 +261,8 @@ def test_flood_after_a_parse_fallback_retries_the_plain_text_not_the_markup():
     markdown_attempt, plain_rescue, retry = bot.calls
     assert markdown_attempt.get("parse_mode")
     assert not plain_rescue.get("parse_mode")
-    assert not retry.get("parse_mode"), "the flood retry reinstated MarkdownV2 that Telegram just rejected"
+    assert not retry.get("parse_mode"), \
+        "the flood retry reinstated MarkdownV2 that Telegram just rejected"
     assert retry["text"] == plain_rescue["text"], (
         "the flood retry must re-send the degraded payload, not the markup"
     )
@@ -284,11 +285,13 @@ def test_flood_then_parse_error_on_the_retry_keeps_the_plain_rescue():
     result = _edit(_adapter(bot))
 
     assert result.success is True
-    assert len(bot.calls) == 3, f"expected refused attempt, formatted retry, plain rescue; got {len(bot.calls)}"
+    assert len(bot.calls) == 3, \
+        f"expected refused attempt, formatted retry, plain rescue; got {len(bot.calls)}"
     refused, retry, rescue = bot.calls
     assert refused.get("parse_mode") and retry.get("parse_mode")
     assert not rescue.get("parse_mode")
-    assert rescue["text"] == _strip_mdv2(CONTENT), "the rescue must send the same stripped text the helper's fallback sends"
+    assert rescue["text"] == _strip_mdv2(CONTENT), \
+        "the rescue must send the same stripped text the helper's fallback sends"
 
 
 def test_flood_then_flood_on_the_retry_fails_closed_without_downgrading():
@@ -398,7 +401,8 @@ def test_overflowing_reply_does_not_downgrade_a_continuation_on_flood():
     bot = _RecordingBot([None, _FloodError(200.0)])
     result = _edit(_adapter(bot), _long_content())
 
-    assert len(bot.sends) == 1, f"expected exactly one (refused) continuation send, got {len(bot.sends)}"
+    assert len(bot.sends) == 1, \
+        f"expected exactly one (refused) continuation send, got {len(bot.sends)}"
     assert bot.sends[0].get("parse_mode"), "the refused send was the MarkdownV2 attempt"
     assert [c for c in bot.sends if not c.get("parse_mode")] == [], (
         "a flood-refused continuation was resent as plain text"
