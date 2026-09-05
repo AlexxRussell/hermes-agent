@@ -91,12 +91,41 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
 
 
 @pytest.mark.linux_only
-def test_managed_gateway_worker_spawn_fails_closed_without_scope(
+def test_managed_gateway_worker_degrades_to_direct_spawn_without_scope(
+    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No user scope available: the worker is spawned directly (with a warning) rather than refused,
+    so a host without a user systemd session still runs its kanban work (cron-scope-degrade)."""
+    workspace, task = worker_setup
+
+    class FakeProc:
+        pid = 4244
+
+    captured_cmd: list[str] = []
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd.extend(cmd)
+        return FakeProc()
+
+    monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    monkeypatch.delenv("HERMES_GATEWAY_CHILD_REQUIRE_SCOPE", raising=False)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: False)
+
+    assert kbd._default_spawn(task, str(workspace)) == 4244
+    assert "systemd-run" not in captured_cmd, "degraded to the direct command, no scope wrapper"
+    assert captured_cmd[:3] == ["hermes", "-p", "coder"]
+
+
+@pytest.mark.linux_only
+def test_managed_gateway_worker_fails_closed_when_the_operator_requires_the_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace, task = worker_setup
     popen_calls: list[list[str]] = []
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    monkeypatch.setenv("HERMES_GATEWAY_CHILD_REQUIRE_SCOPE", "1")
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(list(cmd)))
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
     monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: False)
@@ -107,18 +136,27 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
 
 
 @pytest.mark.linux_only
-def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
+def test_managed_gateway_scope_builder_degrades_if_binary_disappears(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The probe passed but systemd-run vanished before the scope was built: degrade to a direct
+    spawn with a warning, like the no-scope case, unless the operator required the scope."""
     workspace, task = worker_setup
+
+    class FakeProc:
+        pid = 4245
+
+    captured_cmd: list[str] = []
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
+    monkeypatch.delenv("HERMES_GATEWAY_CHILD_REQUIRE_SCOPE", raising=False)
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
     monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
     monkeypatch.setattr("shutil.which", lambda _name: None)
-    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unsafe direct spawn"))
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
 
-    with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
-        kbd._default_spawn(task, str(workspace))
+    assert kbd._default_spawn(task, str(workspace)) == 4245
+    assert "systemd-run" not in captured_cmd
 
 
 def test_standalone_dispatcher_keeps_direct_worker_spawn(
