@@ -1536,6 +1536,13 @@ class MessageEvent:
     source: SessionSource = None
     raw_message: Any = None
     message_id: Optional[str] = None
+    # Delivery-ledger identity for the final send, when it differs from ``message_id``. A queued
+    # (/queue) chain answers the LAST message of the chain, so its final send has to be ledgered
+    # under that message's id. Keyed on the opening event's id instead, two chained turns carrying
+    # the same text collide on one obligation id and the earlier turn's row is overwritten (a
+    # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
+    # still comes from this event.
+    ledger_message_id: Optional[str] = None
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
@@ -3731,8 +3738,13 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
+            # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
+            _ledger_id = getattr(event, "ledger_message_id", None)
+            if _ledger_id is None:
+                _ledger_id = getattr(event, "message_id", "")
             obligation_id = compute_obligation_id(
-                session_key, str(getattr(event, "message_id", "") or ""), text_content)
+                session_key, str(_ledger_id or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
                 platform=str(getattr(source.platform, "value", source.platform)),
