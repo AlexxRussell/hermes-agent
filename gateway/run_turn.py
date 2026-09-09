@@ -3651,6 +3651,12 @@ class GatewayTurnMixin:
                     fail_result="Stale-finalize reconciliation edit failed for session %s (%s); sending complete response via normal final send.",
                     fail_exc="Stale-finalize reconciliation edit failed for session %s: %s; sending complete response via normal final send.",
                 )
+                if not response.get("already_sent"):
+                    # The edit that would have brought the streamed bubble up to the complete reply was
+                    # refused, so it stays frozen on the stale snapshot while the normal final send puts a
+                    # second copy below it: the same leftover as the abandoned-preview branch, cleaned up
+                    # the same way once the replacement has landed.
+                    self._run_agent_schedule_abandoned_preview_cleanup(_sc, source, turn_ctx, _content_delivered)
             else:
                 logger.info(
                     "Stale streamed finalize detected for session %s with no editable message; delivering complete response via normal final send (#71643).",
@@ -3691,7 +3697,16 @@ class GatewayTurnMixin:
         segment-only seam, so finalized earlier segments survive. And the delete runs from the
         post-delivery callback, which base.py fires from ``finally`` whether or not the final send
         succeeded: the callback reads the outcome base.py stamps on the session event and stands down
-        after a failed send, rather than deleting the preview with no replacement in the chat."""
+        after a failed send, rather than deleting the preview with no replacement in the chat.
+
+        Also reached from the stale-finalize branch when its reconciliation edit is refused: the bubble
+        then stays frozen on a stale snapshot while the normal final send puts a second copy below it.
+        And standing down on a refused send does not drop the delete when the ledger recorded that
+        final (a flood penalty over the inline cap, a dead transport): the callback hands it to the
+        row's redelivery (``_register_redelivery_followup``), and ``_redeliver_claimed_obligations``
+        fires it once the redelivered send has landed untruncated. Only the ledger row that carries
+        THIS final can fire it, and only inside this process; a redelivery after a restart finds no
+        registration and leaves the bubble."""
         from gateway.run import safe_schedule_threadsafe
         session_key = turn_ctx.session_key
         if content_delivered or not session_key or stream_consumer is None:
@@ -3712,15 +3727,7 @@ class GatewayTurnMixin:
             return
         _loop_snapshot = asyncio.get_running_loop()
 
-        def _cleanup_abandoned_previews() -> None:
-            # Stamped by base.py right before the hook fires. Missing or False means the replacement
-            # never reached the reader, and the frozen preview is all they have: keep it.
-            _active = getattr(cleanup_adapter, "_active_sessions", {}).get(session_key)
-            if not getattr(_active, "_hermes_final_delivered", False):
-                logger.debug(
-                    "Abandoned preview cleanup skipped for session %s: final send did not land.", session_key)
-                return
-
+        def _schedule_delete() -> None:
             async def _delete_all() -> None:
                 with suppress(Exception):
                     await delete_fn(stale_ids)
@@ -3729,6 +3736,27 @@ class GatewayTurnMixin:
                     _delete_all(), _loop_snapshot, logger=logger,
                     log_message="Abandoned preview cleanup scheduling error",
                 )
+
+        def _cleanup_abandoned_previews() -> None:
+            # Stamped by base.py right before the hook fires. Missing or False means the replacement
+            # never reached the reader, and the frozen preview is all they have: keep it, unless the
+            # ledger still owes the reader that reply.
+            _active = getattr(cleanup_adapter, "_active_sessions", {}).get(session_key)
+            if getattr(_active, "_hermes_final_delivered", False):
+                _schedule_delete()
+                return
+            # A refused final the ledger recorded (a flood penalty over the inline cap, a dead transport)
+            # is redelivered later, outside this turn. Hand the delete to that redelivery, which fires it
+            # once the complete reply has landed. With no row nothing will replace the bubble: it stays.
+            _obligation_id = getattr(_active, "_hermes_final_obligation_id", None)
+            _defer = getattr(self, "_register_redelivery_followup", None)
+            if _obligation_id and callable(_defer) and _defer(_obligation_id, _schedule_delete):
+                logger.debug(
+                    "Abandoned preview cleanup deferred for session %s: final send did not land; the ledger "
+                    "redelivery of obligation %s fires it.", session_key, _obligation_id)
+                return
+            logger.debug(
+                "Abandoned preview cleanup skipped for session %s: final send did not land.", session_key)
 
         try:
             cleanup_adapter.register_post_delivery_callback(
