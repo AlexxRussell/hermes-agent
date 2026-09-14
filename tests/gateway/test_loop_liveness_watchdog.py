@@ -44,6 +44,7 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
             side_effect=stop_during_dump,
         ) as dump,
         patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
+        patch("gateway.shutdown_watchdog._mark_exited_quietly") as mark_exited,
     ):
         handle = start_loop_liveness_watchdog(
             loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1
@@ -57,6 +58,7 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     critical.assert_called_once()
     dump.assert_called_once_with(all_threads=True)
     assert exit_codes == []
+    mark_exited.assert_not_called()
 
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
@@ -306,6 +308,8 @@ def test_gateway_runner_liveness_guards_start_and_stop():
         probe_interval=30.0,
         probe_timeout=10.0,
         max_strikes=3,
+        diagnostics=False,
+        executor_owner=runner,
     )
     assert runner._loop_floor_timer_handle is floor_timer
     assert runner._loop_liveness_watchdog is watchdog

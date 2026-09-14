@@ -1934,6 +1934,9 @@ DEFAULT_CONFIG = {
         # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.
         # Set to false to disable. See #69089.
         "loop_watchdog": True,
+        # Capture first-miss stacks and recent probe times to logs/gateway-loop-watchdog.json.
+        # Opt-in; fixed size, overwritten on subsequent stalls, no output while healthy.
+        "loop_watchdog_diagnostics": False,
         # Watchdog tuning (defaults mirror gateway/shutdown_watchdog.py): probe_interval = seconds
         # between probes; probe_timeout = seconds before an unprocessed probe counts as a miss;
         # max_strikes = consecutive misses before hard-exit 75 (~90-120s of sustained loop block at

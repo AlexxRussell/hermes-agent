@@ -622,6 +622,8 @@ class GatewayStartupMixin:
                     max_strikes=int(getattr(
                         config, "loop_watchdog_max_strikes", DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
                     )),
+                    diagnostics=bool(getattr(config, "loop_watchdog_diagnostics", False)),
+                    executor_owner=self,
                 )
             except Exception:
                 logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)

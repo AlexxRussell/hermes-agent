@@ -41,6 +41,7 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 # the loop it monitors) is fixed at the root by the off-loop heartbeat write + two-witness probe (#90502),
 # so the default stays tight for genuine wedges.
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
+_LOOP_FINAL_REPORT_BUDGET_S = 1.0
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
 
@@ -89,16 +90,22 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    diagnostics: bool = False, executor_owner: Any = None,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
     opt-out."""
     stop_event = threading.Event()
+    recorder = None
+    if diagnostics:
+        with contextlib.suppress(Exception):
+            from gateway.loop_watchdog_diagnostics import LoopWatchdogDiagnostics, TimedProbe
+            recorder = LoopWatchdogDiagnostics(loop, executor_owner, _process_hermes_home())
 
     def _watchdog() -> None:
         strikes = 0
         while not stop_event.wait(timeout=probe_interval):
-            probe_event = threading.Event()
+            probe_event = TimedProbe() if recorder is not None else threading.Event()
             try:
                 loop.call_soon_threadsafe(probe_event.set)
             except RuntimeError:  # normally closed loop: nothing left to backstop
@@ -107,6 +114,8 @@ def start_loop_liveness_watchdog(
                 logger.debug("Failed to schedule gateway loop liveness probe", exc_info=True)
                 return
             deadline = time.monotonic() + probe_timeout
+            if recorder is not None:
+                probe_event.deadline = deadline
             while not stop_event.is_set():  # poll so a stop() mid-wait is honoured within ~50ms
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or probe_event.wait(timeout=min(remaining, 0.05)):
@@ -115,27 +124,37 @@ def start_loop_liveness_watchdog(
                 return
             if probe_event.is_set():
                 strikes = 0
+                if recorder is not None:
+                    with contextlib.suppress(Exception):
+                        recorder.observe(probe_event, strikes)
                 continue
             if stop_event.is_set():  # re-checked before each irreversible step: a late stop() wins
                 return
             strikes += 1
+            if recorder is not None:
+                with contextlib.suppress(Exception):
+                    recorder.observe(probe_event, strikes)
             if strikes < max_strikes:
                 continue
             if stop_event.is_set():
                 return
+            # Stderr, logging locks and the lifecycle filesystem can all be the
+            # stalled resource. None may hold the recovery thread indefinitely.
+            reporter = threading.Thread(
+                target=_report_loop_liveness_failure, args=(strikes, exit_code, stop_event),
+                daemon=True, name="gateway-loop-final-report",
+            )
+            report_deadline = time.monotonic() + _LOOP_FINAL_REPORT_BUDGET_S
             with contextlib.suppress(Exception):
-                logger.critical(
-                    "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
-                    "stacks and exiting with code %d so the service supervisor can restart it.",
-                    strikes, exit_code)
-            try:
-                faulthandler.dump_traceback(all_threads=True)
-            except Exception:
-                logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+                reporter.start()
+                reporter.join(timeout=max(0.0, report_deadline - time.monotonic()))
+            if recorder is not None and recorder.writer is not None:
+                with contextlib.suppress(Exception):
+                    recorder.writer.join(timeout=max(0.0, report_deadline - time.monotonic()))
             if stop_event.is_set():
                 return
-            _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
             os._exit(exit_code)
+            return
     thread = threading.Thread(target=_watchdog, daemon=True, name="gateway-loop-liveness-watchdog")
     try:
         thread.start()
@@ -143,6 +162,20 @@ def start_loop_liveness_watchdog(
         logger.debug("Failed to start gateway loop liveness watchdog", exc_info=True)
         return None
     return _LoopLivenessWatchdogHandle(stop_event, thread)
+
+
+def _report_loop_liveness_failure(strikes: int, exit_code: int, stop_event: threading.Event) -> None:
+    # Take the fatal snapshot before a synchronous handler can delay it.
+    with contextlib.suppress(Exception):
+        faulthandler.dump_traceback(all_threads=True)
+    with contextlib.suppress(Exception):
+        logger.critical(
+            "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
+            "stacks and exiting with code %d so the service supervisor can restart it.",
+            strikes, exit_code,
+        )
+    if not stop_event.is_set():
+        _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
 
 
 def _mark_exited_quietly(exit_code: int, reason: str) -> None:

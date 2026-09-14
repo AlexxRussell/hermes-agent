@@ -558,6 +558,8 @@ class GatewayConfig:
     # t_0f76430f/t_70483f23). A genuine wedge (event loop frozen for the full tolerance window) still
     # escalates to a supervised restart. See #69089.
     loop_watchdog: bool = True
+    # Opt-in first-miss stacks and probe history, bounded independently of log rotation.
+    loop_watchdog_diagnostics: bool = False
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
@@ -572,7 +574,7 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
-        "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
+        "room_link_url", "systemd_watchdog_seconds", "loop_watchdog", "loop_watchdog_diagnostics",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
     )
@@ -716,6 +718,7 @@ class GatewayConfig:
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
+            loop_watchdog_diagnostics=_coerce_bool(pick("loop_watchdog_diagnostics"), False),
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
