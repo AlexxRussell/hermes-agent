@@ -210,10 +210,12 @@ class TestSystemdTimeoutStopUs:
         query that stops requesting ``LoadState`` stops being able to tell the managers apart."""
         def run(cmd, **kwargs):
             scope = "user" if "--user" in cmd else "system"
+            # systemctl takes properties as one comma list or as repeated flags, so accumulate:
+            # the contract under test is "LoadState was asked for", not how it was spelled.
             requested = []
             for arg in cmd:
                 if arg.startswith("--property="):
-                    requested = arg.split("=", 1)[1].split(",")
+                    requested.extend(arg.split("=", 1)[1].split(","))
             props = units.get(scope, {"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"})
             out = "".join(f"{k}={props[k]}\n" for k in requested if k in props)
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
