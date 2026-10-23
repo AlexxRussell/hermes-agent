@@ -8,8 +8,9 @@ import re
 _BOUNDARY_SUBS = (
     (re.compile(r"(^|[\s\n>:\]\)])\[200~"), r"\1"),
     (re.compile(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])"), ""),
-    (re.compile(r"(^|[\s\n>:\]\)])00~"), r"\1"),
-    (re.compile(r"01~(?=$|[\s\n<\[\(\):;.,!?])"), ""),
+    # A digit followed by ':' belongs to a time literal, not a paste boundary.
+    (re.compile(r"(^|[\s\n>:\]\)])(?<![0-9]:)00~"), r"\1"),
+    (re.compile(r"(?<![0-9]:)01~(?=$|[\s\n<\[\(\):;.,!?])"), ""),
 )
 
 # Corruption signature from desktop bracketed-paste leaks (#62557).

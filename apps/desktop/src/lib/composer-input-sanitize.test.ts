@@ -40,6 +40,26 @@ describe('collapseRepeatedInputArtifacts', () => {
 })
 
 describe('sanitizeComposerInput', () => {
+  it.each([
+    '12:00~12:15',
+    '08:00~09:30',
+    '12:01~ 12:15',
+    '12:01~',
+    'Schedule lunch 12:00~12:15.',
+    'Meet (12:00~12:01~).'
+  ])('preserves time literals in %j', text => {
+    expect(sanitizeComposerInput(text)).toBe(text)
+  })
+
+  it.each([
+    ['00~hello01~', 'hello'],
+    ['prefix:00~hello01~ suffix', 'prefix:hello suffix'],
+    ['00~12:00~12:15\n12:01~ 12:1501~', '12:00~12:15\n12:01~ 12:15'],
+    ['\x1b[200~12:00~12:15\x1b[201~', '12:00~12:15']
+  ])('strips paste wrappers without corrupting their content in %j', (text, expected) => {
+    expect(sanitizeComposerInput(text)).toBe(expected)
+  })
+
   it('normalizes wrappers and repeated artifact tails together', () => {
     const corrupted = 'hello[' + '~[[e'.repeat(8)
     expect(sanitizeComposerInput(corrupted)).toBe('hello')

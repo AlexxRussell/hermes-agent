@@ -1,5 +1,7 @@
 """Tests for shared user prompt input sanitization."""
 
+import pytest
+
 from hermes_cli.input_sanitize import (
     collapse_repeated_input_artifacts,
     sanitize_user_prompt_text,
@@ -30,6 +32,26 @@ class TestCollapseRepeatedInputArtifacts:
 
 
 class TestSanitizeUserPromptText:
+    @pytest.mark.parametrize("text", [
+        "12:00~12:15",
+        "08:00~09:30",
+        "12:01~ 12:15",
+        "12:01~",
+        "Schedule lunch 12:00~12:15.",
+        "Meet (12:00~12:01~).",
+    ])
+    def test_preserves_time_literals(self, text):
+        assert sanitize_user_prompt_text(text) == text
+
+    @pytest.mark.parametrize(("text", "expected"), [
+        ("00~hello01~", "hello"),
+        ("prefix:00~hello01~ suffix", "prefix:hello suffix"),
+        ("00~12:00~12:15\n12:01~ 12:1501~", "12:00~12:15\n12:01~ 12:15"),
+        ("\x1b[200~12:00~12:15\x1b[201~", "12:00~12:15"),
+    ])
+    def test_strips_paste_wrappers_without_corrupting_their_content(self, text, expected):
+        assert sanitize_user_prompt_text(text) == expected
+
     def test_combines_wrapper_strip_and_tail_collapse(self):
         prefix = "hello["
         corrupted = prefix + "~[[e" * 8
