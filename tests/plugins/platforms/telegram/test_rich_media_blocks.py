@@ -53,3 +53,30 @@ async def test_a_question_then_a_rich_photo_is_one_turn_with_the_image():
     [event] = [c.args[0] for c in adapter.handle_message.await_args_list]
     assert event.media_urls == ["/cache/p1.jpg"] and event.message_type == MessageType.PHOTO
     assert event.text.startswith("Is this a real study?")
+
+
+@pytest.mark.asyncio
+async def test_a_question_then_a_rich_photo_replying_to_a_photo_is_one_turn():
+    """A rich photo sent as a reply first downloads the replied-to photo; the question typed just before
+    must already be claimed then, or it flushes alone while that download runs."""
+    from tests.plugins.platforms.telegram.test_text_then_photo_one_turn import _adapter, _slow_photo, _text, _update
+    adapter, release = _adapter(), asyncio.Event()
+    replied = _slow_photo(release)  # the replied-to photo's download outlasts the 0.18 s text delay
+    replied.photo[0].file_size = 4
+    adapter._bot = SimpleNamespace(get_file=AsyncMock(return_value=SimpleNamespace(
+        file_path="photos/p1.jpg", download_as_bytearray=AsyncMock(return_value=bytearray(b"p1")))))
+    rich = _text(None)
+    rich.rich_message, rich.api_kwargs = None, {"rich_message": {"blocks": [_photo("p1")]}}
+    rich.reply_to_message, rich.quote = replied, None
+
+    async def cache(data, **_kw):
+        return CachedMedia(f"/cache/{bytes(data).decode()}.jpg", "image/jpeg", "image", "x.jpg")
+    with patch("gateway.platforms.base.cache_media_bytes_async", new=cache):
+        await adapter._handle_text_message(_update(_text("Is this a real study?")), MagicMock())
+        photo = asyncio.create_task(adapter._handle_text_message(_update(rich), MagicMock()))
+        await asyncio.sleep(0.6)  # health: allow HX013 -- a download outlasting the 0.18 s text delay IS the race
+        release.set()
+        await photo
+        await async_wait_until(lambda: any(c.args[0].media_urls for c in adapter.handle_message.await_args_list), timeout=5)
+    turns = [(e.text.splitlines()[0], e.media_urls) for e in (c.args[0] for c in adapter.handle_message.await_args_list)]
+    assert turns == [("Is this a real study?", ["/cache/post.jpg", "/cache/p1.jpg"])]

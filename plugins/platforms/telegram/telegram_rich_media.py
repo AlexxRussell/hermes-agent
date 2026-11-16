@@ -171,13 +171,24 @@ async def handle_rich_media_message(adapter: Any, msg: Any, update: Any) -> bool
     attachments, the text path goes on): gate it like any message; unaddressed, observe it with its
     cached attachment; addressed, dispatch it as media."""
     from gateway.platforms.event import MessageType
+    from plugins.platforms.telegram.telegram_context import group_trigger_text
+    from plugins.platforms.telegram.telegram_text_photo_pairing import claim_pending_text, release_text_claim
     if not rich_media_items(msg):
         return False
     if not adapter._should_process_message(msg):
         await observe_skipped(adapter, msg, update)
         return True
-    await adapter._ensure_forum_commands(update.message)
-    await dispatch_rich_media(adapter, msg, await adapter._build_triggered_event(msg, update, MessageType.TEXT))
+    # ``_build_triggered_event`` split around its await: the question typed just before is claimed
+    # BEFORE the replied-to attachment downloads, else it flushes alone during that download.
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+    event.text = group_trigger_text(adapter, msg, event.text)
+    claim_pending_text(adapter, msg, adapter._apply_telegram_group_observe_attribution(event))
+    try:
+        await adapter._ensure_forum_commands(update.message)
+        await adapter._cache_replied_media(msg, event)
+        await dispatch_rich_media(adapter, msg, adapter._apply_telegram_group_observe_attribution(event))
+    finally:
+        release_text_claim(adapter, msg)
     return True
 
 
