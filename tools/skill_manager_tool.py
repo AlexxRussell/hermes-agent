@@ -868,8 +868,13 @@ def skill_manage(
         with suppress(Exception):
             from tools import skill_ledger as _ledger
             _pre = _find_skill(name)
+            _pre_root = _pre["path"] if _pre else None
+            if _pre_root is None and action == "write_file" and file_path == "SKILL.md":
+                # An orphan restore keeps the files it finds; without them in the before-state,
+                # rolling the restore back from the ledger deletes them.
+                _pre_root = _find_orphan_skill_dir(name)[0]
             _ledger_before = _ledger.capture_before(
-                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+                _pre_root, complete_package=(action == "delete"), skill=name)
         handler = _ACTION_HANDLERS.get(action, lambda a: _err(
             f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
         result = handler({"name": name, **args})

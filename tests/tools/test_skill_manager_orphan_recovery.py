@@ -48,6 +48,23 @@ def test_orphan_skill_directory_recovers_through_write_file(skills_root):
     assert _find_skill("probe-skill")["path"] == orphan
 
 
+def test_ledger_rollback_of_a_restore_keeps_the_files_it_found(skills_root):
+    from tools import skill_ledger
+    orphan = skills_root / "research" / "probe-skill"
+    (orphan / "scripts").mkdir(parents=True)
+    (orphan / "scripts" / "run.py").write_text("print('hi')\n")
+    restored = json.loads(skill_manage(
+        action="write_file", name="probe-skill", file_path="SKILL.md", file_content=SKILL_MD))
+    assert restored["success"] is True, restored
+
+    entry = skill_ledger.list_entries(skill="probe-skill")[0]
+    ok, msg = skill_ledger.rollback_entry(entry["id"])  # `hermes curator rollback <id>`
+
+    assert ok, msg
+    # Undoing the restore removes the SKILL.md it wrote, never the files that were already there.
+    assert [p.name for p in orphan.rglob("*") if p.is_file()] == ["run.py"]
+
+
 def test_orphan_skill_recovery_requires_unambiguous_name(skills_root):
     for category in ("research", "development"):
         (skills_root / category / "probe-skill").mkdir(parents=True)
