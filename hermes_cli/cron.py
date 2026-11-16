@@ -719,9 +719,10 @@ def _cron_spend_outliers() -> dict[str, str]:
     from statistics import median
     from cron.jobs import CRON_DIR
     # Only the last 11 measured fires per job matter; the audit file grows forever, so stream it.
+    # errors="replace": a record cut mid-character must fail json.loads below, not abort doctor.
     fires: dict[str, deque] = {}
     try:
-        with open(CRON_DIR / "usage_audit.jsonl", encoding="utf-8-sig") as audit:
+        with open(CRON_DIR / "usage_audit.jsonl", encoding="utf-8-sig", errors="replace") as audit:
             for line in audit:
                 try:
                     rec = json.loads(line)
