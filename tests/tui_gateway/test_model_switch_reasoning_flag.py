@@ -11,6 +11,7 @@ import pytest
 
 from tui_gateway import server
 
+_REAL_MARKER = server._append_model_switch_marker
 
 class _Agent:
     def __init__(self):
@@ -62,3 +63,17 @@ def test_reasoning_flag_with_global_writes_config_and_drops_the_pin(_quiet_switc
 
     with pytest.raises(ValueError):
         server._apply_model_switch("sid", {"agent": _Agent()}, "new/model --reasoning turbo")
+
+
+def test_switch_notice_names_the_applied_level_not_the_flag_spelling(_quiet_switch, monkeypatch):
+    """``--reasoning disabled`` and ``False`` apply exactly what ``none`` does, so the switch notice
+    must name that level the same way, not echo the word the user typed."""
+    monkeypatch.setattr(server, "_append_model_switch_marker", _REAL_MARKER)
+    efforts = []
+    for spelling in ("none", "disabled", "False"):
+        agent = _Agent()
+        session = {"agent": agent, "session_key": "s", "history": []}
+        server._apply_model_switch("sid", session, f"new/model --provider nous --reasoning {spelling} --session")
+        assert agent.reasoning_config == {"enabled": False}
+        efforts.append(session["history"][-1]["display_metadata"].get("effort"))
+    assert efforts == ["none", "none", "none"]

@@ -27,7 +27,7 @@ from typing import Any, Callable, NamedTuple, Optional
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
-    reset_hermes_home_override, set_hermes_home_override)
+    parse_reasoning_effort, reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1181,8 +1181,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     if not effort:
         from agent.reasoning_effort import requested_effort
         effort = requested_effort(getattr(session.get("agent"), "reasoning_config", None)) or ""
-    if effort:
-        display_metadata["effort"] = effort
+    if effort:  # the level as applied: `--reasoning disabled`/`false`/`NONE` read "none", as `none` does
+        display_metadata["effort"] = (parse_reasoning_effort(effort) or {"effort": effort}).get("effort", "none")
     entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch",
                              "display_metadata": display_metadata}
     with session.get("history_lock") or contextlib.nullcontext():
