@@ -98,6 +98,21 @@ def test_chat_message_declines_pending_approval_as_next_instruction(gate):
     assert "next instruction" in sent
 
 
+def test_chat_reply_that_starts_with_a_path_declines_too(gate):
+    """A leading file path is text, not a slash command (``get_command`` rejects it), so it answers."""
+    _set_typed_reply_declines(True)
+    runner, _adapter = _runner()
+    session_key = runner._session_key_for_source(_source())
+    out, thread = gate(session_key)
+    reply = "/srv/build-cache/tmp only, keep the rest"
+
+    event = MessageEvent(text=reply, message_type=MessageType.TEXT, source=_source(), message_id="m1")
+    assert asyncio.run(runner._route_plaintext_approval_while_busy(event, session_key)) is True
+    thread.join(timeout=5)
+
+    assert reply in out["result"]["message"] and "next instruction" in out["result"]["message"]
+
+
 def test_chat_message_leaves_approval_pending_when_off(gate):
     _set_typed_reply_declines(False)
     runner, _adapter = _runner()

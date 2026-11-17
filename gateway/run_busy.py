@@ -732,7 +732,7 @@ class GatewayBusySessionMixin:
         from tools.approval import resolve_gateway_approval
         from tools.approval_context import typed_reply_declines
         text = (event.text or "").strip()
-        if (not text or event.is_command() or event.message_type != MessageType.TEXT or event.media_urls
+        if (not text or event.get_command() or event.message_type != MessageType.TEXT or event.media_urls
                 or getattr(event, "internal", False) or not automatic_notices_allowed(event.source)):
             return False
         async with self._async_profile_scope_for_source(event.source):
