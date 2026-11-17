@@ -81,6 +81,33 @@ def test_set_tokens_stamps_bound_issuer_and_get_tokens_keeps_it_out_of_the_sdk_m
     assert not hasattr(tokens, "hermes_issuer")  # never leaks into the wire model
 
 
+def test_first_sign_in_binds_the_client_this_process_keeps_using(tmp_path):
+    """The process that signs in keeps its provider: its next 401, and its reload of client.json after a
+    tokens-file change, must already refuse the configured client at another server, not after a restart."""
+    from mcp.client.auth.utils import credentials_match_issuer
+    from tools.mcp_oauth import _build_client_metadata, _maybe_preregister_client
+    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
+
+    as1, as2 = "https://as1.example.com", "https://as2.example.com"
+    cfg = {"client_id": "cfg", "client_secret": "s3cret", "_resolved_port": 1}
+    storage = HermesTokenStorage("srv", hermes_home=tmp_path)
+    metadata = _build_client_metadata(cfg)
+    _maybe_preregister_client(storage, cfg, metadata)  # provider build, before any sign-in: unbound
+
+    async def sign_in_at_as1():
+        provider = HermesMCPOAuthProvider(server_url="https://mcp.example.com/mcp", server_name="srv",
+                                          storage=storage, client_metadata=metadata, configured_client_id="cfg")
+        await provider._initialize()
+        provider.context.auth_server_url = as1  # what the 401 branch discovered
+        await provider._store_tokens(OAuthToken(access_token="a", token_type="Bearer"))
+        return provider.context.client_info
+
+    live = asyncio.run(sign_in_at_as1())
+    assert storage.configured_client_issuer("cfg") == as1
+    assert not credentials_match_issuer(live, as2, None)
+    assert not credentials_match_issuer(asyncio.run(storage.get_client_info()), as2, None)
+
+
 def test_configured_client_secret_is_never_presented_to_another_authorization_server(tmp_path):
     """A configured ``oauth.client_id``/``client_secret`` signs in once with AS1; when the MCP server
     later names AS2, the SDK's own credential check must refuse the stored client there (so it

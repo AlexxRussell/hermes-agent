@@ -591,12 +591,15 @@ def bind_configured_client(context: Any, client_id: str | None) -> None:
     went to, so its secret is never presented to another one (``_maybe_preregister_client``). Bound to
     the resource-advertised server, the exact string the SDK compares stored credentials against
     (SEP-2352); a server that advertises none stays unbound rather than risk a spurious mismatch."""
-    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth import HermesTokenStorage, _model_json, _write_json
     storage, info = getattr(context, "storage", None), getattr(context, "client_info", None)
     issuer = str(context.auth_server_url) if getattr(context, "auth_server_url", None) else None
     if (client_id and issuer and isinstance(storage, HermesTokenStorage)
             and getattr(info, "client_id", None) == client_id):
         storage.bind_configured_client(client_id, issuer)
+        if info.issuer is None:  # this process keeps the client: stamp it now, not at the next provider build
+            context.client_info = info.model_copy(update={"issuer": storage.configured_client_issuer(client_id)})
+            _write_json(storage._client_info_path(), _model_json(context.client_info))
 
 
 def enforce_refresh_token_issuer(context: Any) -> None:
