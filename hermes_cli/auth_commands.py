@@ -409,13 +409,26 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 def _verify_before_storing(provider: str, token: str, base_url: str) -> KeyCheck:
     """One live call with the pasted key; a key the provider rejects is never stored."""
     print(f"Checking the key with {provider}...", flush=True)
-    check = verify_api_key(provider, token, base_url, api_mode=_provider_api_mode(provider))
+    check = verify_api_key(provider, token, _chat_base_url(provider, token, base_url),
+                           api_mode=_provider_api_mode(provider))
     if check.outcome is KeyCheckOutcome.REJECTED:
         mode = f" ({check.auth_mode})" if check.auth_mode else ""
         raise SystemExit(
             f"{provider} rejected this key{mode}: HTTP {check.status_code}: {check.detail}\n"
             "Nothing was stored. Check the key, or pass --no-verify to store it without checking.")
     return check
+
+
+def _chat_base_url(provider: str, token: str, base_url: str) -> str:
+    """Where chat sends a row stored at *base_url*: a ``model.base_url`` relay replaces the vendor host,
+    unless a ``providers:`` entry owns that relay with its own key (then this key never goes there)."""
+    from hermes_cli.runtime_provider import (
+        _effective_model, _get_model_config, _owned_url_credential, _pool_entry_mode_and_url)
+    model_cfg = _get_model_config()
+    row = PooledCredential(provider=provider, id="", label="", auth_type=AUTH_TYPE_API_KEY, priority=0,
+                           source=SOURCE_MANUAL, access_token=token, base_url=base_url)
+    url = _pool_entry_mode_and_url(provider, row, model_cfg, _effective_model(model_cfg, None), base_url)[1]
+    return base_url if _owned_url_credential(url, model_cfg, provider)[0] else url
 
 
 def _billing_status_fields(check: KeyCheck | None) -> dict:

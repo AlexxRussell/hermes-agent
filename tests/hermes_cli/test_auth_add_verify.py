@@ -63,6 +63,30 @@ def test_rejected_key_is_refused_and_not_stored(provider_home, monkeypatch, caps
     assert [e["access_token"] for e in _pool(provider_home)] == ["sk-acme"]
 
 
+def test_key_is_checked_at_the_relay_chat_sends_it_to(tmp_path, monkeypatch, capsys):
+    """A ``model.base_url`` relay (what ``hermes model`` saves) is where chat sends a pooled key."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.auth_commands import auth_add_command
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    vendor = type("Vendor", (_Provider,), {"status": 401, "body": {"error": {"message": "Authentication Fails"}}})
+    servers = [http.server.HTTPServer(("127.0.0.1", 0), handler) for handler in (vendor, _Provider)]
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    vendor_url, relay_url = (f"http://127.0.0.1:{server.server_port}/v1" for server in servers)
+    monkeypatch.setattr(PROVIDER_REGISTRY["deepseek"], "inference_base_url", vendor_url)
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"model": {
+        "provider": "deepseek", "default": "deepseek-chat", "base_url": relay_url}}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    try:
+        auth_add_command(SimpleNamespace(provider="deepseek", auth_type="api-key", api_key="sk-relay", label="k"))
+    finally:
+        for server in servers:
+            server.shutdown()
+    assert "Verified: deepseek accepted the key" in capsys.readouterr().out
+    runtime = resolve_runtime_provider(requested="deepseek")
+    assert (runtime["base_url"], runtime["api_key"]) == (relay_url, "sk-relay")
+
+
 @pytest.mark.parametrize("status,message,body", [
     (402, "Insufficient credits", {"error": {"message": "Insufficient credits"}}),
     (403, "Key limit exceeded (total limit)", {"error": {"message": "Key limit exceeded (total limit)"}}),
