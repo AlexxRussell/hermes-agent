@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import time
 
 import pytest
 from aiohttp import web
@@ -95,6 +96,31 @@ async def test_later_automation_completion_keeps_original_destination_resolvable
         assert [content for content, _ in calls] == ['first reply', 'second reply']
         assert calls[0][1] == calls[1][1] == {'deliver': 'github_comment',
                                               'deliver_extra': {'repo': 'owned/repo', 'pr_number': '7'}}
+
+
+@pytest.mark.asyncio
+async def test_enabling_an_already_enabled_route_keeps_inflight_replies(monkeypatch):
+    """Admission pins a digest of the route record, so `hermes webhook enable` on a route that is
+    already on must leave that record as it was or every run in flight loses its reply."""
+    from argparse import Namespace
+    from hermes_cli.webhook import webhook_command
+    monkeypatch.setattr('hermes_cli.webhook._is_webhook_enabled', lambda: True)
+    cli = dict(name='ci', prompt='{text}', events='', description='', skills='', deliver='log', deliver_chat_id='',
+               secret='route-secret', route_profile=None, payload='', script='', signature=None)
+    webhook_command(Namespace(webhook_action='subscribe', **cli))
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={}))
+    app = web.Application()
+    mount_authority(app, adapter)
+    app.router.add_post('/webhooks/{route_name}', adapter._handle_webhook)
+    async with TestClient(TestServer(app)) as client:
+        body, stamp = json.dumps({'text': 'build failed'}).encode(), str(int(time.time()))
+        headers = {'X-Request-ID': 'inflight-one', 'X-Webhook-Timestamp': stamp, 'X-Webhook-Signature-V2':
+                   hmac.new(b'route-secret', stamp.encode() + b'.' + body, hashlib.sha256).hexdigest()}
+        assert (await client.post('/webhooks/ci', data=body, headers=headers)).status == 202
+        webhook_command(Namespace(webhook_action='enable', **cli))
+        from gateway.platforms.webhook import _WebhookDeliveryIdentity
+        chat_id = _WebhookDeliveryIdentity.from_parts(None, 'ci', 'inflight-one').session_chat_id
+        assert (await adapter.send(chat_id, 'completed answer')).success
 
 
 @pytest.mark.asyncio

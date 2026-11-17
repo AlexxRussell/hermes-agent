@@ -416,7 +416,9 @@ def _cmd_set_enabled(args, *, enabled: bool):
     def set_enabled(subscriptions: dict[str, dict]) -> None:
         if name not in subscriptions:
             raise KeyError(name)
-        subscriptions[name]["enabled"] = enabled
+        # A run in flight pins a digest of this record: a route already in the requested state stays as it is.
+        if (subscriptions[name].get("enabled", True) is not False) != enabled:
+            subscriptions[name]["enabled"] = enabled
 
     try:
         _mutate_subscriptions(set_enabled)
