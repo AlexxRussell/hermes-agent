@@ -124,3 +124,25 @@ def test_values_are_masked_as_the_runtime_resolves_them(tmp_path, monkeypatch):
         # MCP / plugin results never pass redact_sensitive_text: the tool-result boundary masks them.
         msg = make_tool_result_message("mcp_srv_echo", [{"type": "text", "text": f"env {OPAQUE}"}], "c1")
         assert msg["content"][0]["text"] == f"env {MARKER}"
+
+
+@pytest.mark.parametrize("delivery", ["tool_result", "user_turn"])
+def test_deferred_lsp_note_masks_env_value_on_model_egress(tmp_path, delivery):
+    # A late LSP/plugin note is attached AFTER make_tool_result_message scrubs the result, or rides the
+    # next user turn; both deliveries must mask the .env value like the result itself.
+    from types import SimpleNamespace
+
+    from agent.plugin_live_notes import attach_to_tool_message, pop_plugin_notices, queue_plugin_notice
+    from agent.tool_dispatch_helpers import make_tool_result_message
+
+    a = _home(tmp_path, "a", [f"ACME_SERVICE_TOKEN={OPAQUE}"])
+    with _in(a):
+        agent = SimpleNamespace()
+        queue_plugin_notice(agent, "lsp:config.ts", f"LSP diagnostic: unexpected value '{OPAQUE}'")
+        if delivery == "tool_result":
+            row = make_tool_result_message("patch", "edited file", "c1")
+            attach_to_tool_message(agent, row)
+            emitted = row["content"]
+        else:
+            emitted = pop_plugin_notices(agent)
+    assert OPAQUE not in emitted and f"'{MARKER}'" in emitted

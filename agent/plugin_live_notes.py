@@ -41,9 +41,12 @@ def pop_plugin_notices(agent: Any) -> str:
         notes = _queued(agent)
         if notes:
             setattr(agent, _QUEUED, {})
-    from agent.redact_secret_sources import redact_secret_source_values
+    if not notes:
+        return ""
+    from agent.redact_env_values import env_masking_enabled, redact_exact_secret_values
 
-    return redact_secret_source_values("\n\n".join(notes.values()))
+    # Delivered after make_tool_result_message's scrub, so it gets the same exact-value pass.
+    return redact_exact_secret_values("\n\n".join(notes.values()), env=env_masking_enabled())
 
 
 def attach_to_tool_message(agent: Any, message: dict) -> None:
