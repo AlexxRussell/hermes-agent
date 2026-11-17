@@ -46,6 +46,14 @@ def is_alias_turn(runner, event) -> bool:
     return runner is not None and _alias_prefix_sync(runner, event) is not None
 
 
+def _switched(runner, session_key, override_before) -> bool:
+    """A committed switch installs a fresh override dict and arms the --once restore; an error, a
+    cost confirmation or a selection-guard refusal leaves both as they were."""
+    state = runner._peek_session_state(session_key)
+    return bool(state is not None and state.conversation.one_turn_restore
+                and runner._session_model_override(session_key) is not override_before)
+
+
 def _send_after_confirm(runner, event, prefix, session_key) -> None:
     """A cost-confirmed alias keeps its question: approving commits the switch, then sends ``rest``."""
     from tools import slash_confirm
@@ -55,9 +63,10 @@ def _send_after_confirm(runner, event, prefix, session_key) -> None:
     inner = pending["handler"]
 
     async def _then_send(choice: str) -> Optional[str]:
+        override_before = runner._session_model_override(session_key)
         reply = await inner(choice)
-        if choice == "cancel":
-            return reply
+        if choice == "cancel" or not _switched(runner, session_key, override_before):
+            return reply  # cancelled, or the approved switch failed: ``rest`` is not sent
         if reply:
             await runner._send_command_ack(event.source, reply, "model")
         return await runner._handle_message(dataclasses.replace(event, text=prefix.rest))
@@ -81,11 +90,7 @@ async def apply_alias_prefix(runner, event, source, session_key) -> tuple[bool, 
     override_before = runner._session_model_override(session_key)
     async with runner._async_profile_scope_for_source(source):
         reply = await runner._handle_model_command(dataclasses.replace(event, text=prefix.model_command))
-    # A committed switch installs a fresh override dict and arms the --once restore; an error, a
-    # cost confirmation or a selection-guard refusal leaves both as they were.
-    state = runner._peek_session_state(session_key)
-    if (state is None or not state.conversation.one_turn_restore
-            or runner._session_model_override(session_key) is override_before):
+    if not _switched(runner, session_key, override_before):
         _send_after_confirm(runner, event, prefix, session_key)
         return True, reply
     if reply:

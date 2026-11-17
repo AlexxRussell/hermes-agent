@@ -103,3 +103,25 @@ async def test_a_cost_confirmed_alias_keeps_its_question(tmp_path, monkeypatch):
     await runner._handle_message(MessageEvent(text="and again", source=SOURCE, message_id="m2"))
 
     assert turns == [("hi there", "fast-model"), ("and again", "base-model")]
+
+
+@pytest.mark.asyncio
+async def test_an_approved_alias_that_fails_to_switch_sends_nothing(tmp_path, monkeypatch):
+    """Approving the cost prompt, then a failed swap: the question must not run on the standing model."""
+    import threading
+    from tools import slash_confirm
+
+    runner, turns = _runner(tmp_path, monkeypatch, prefix_enabled=True)
+    monkeypatch.setattr("hermes_cli.model_selection_guards.combined_selection_warning",
+                        lambda *a, **k: SimpleNamespace(title="Expensive", message="costs more"))
+
+    def _refuse(**_kwargs):
+        raise RuntimeError("no client for fast-model")
+
+    runner._agent_cache = {KEY: (SimpleNamespace(switch_model=_refuse, context_compressor=None), "sig")}
+    runner._agent_cache_lock = threading.Lock()
+
+    await runner._handle_message(MessageEvent(text="+fast hi there", source=SOURCE, message_id="m1"))
+    await slash_confirm.get_pending(KEY)["handler"]("once")
+
+    assert turns == []
