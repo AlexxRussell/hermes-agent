@@ -129,6 +129,16 @@ def test_a_visible_filename_with_a_space_is_listed_not_called_hidden(proj):
     assert "none match" in r["complete"]
 
 
+@pytest.mark.parametrize("mode", ["content", "files_only", "count"])
+def test_a_search_rooted_at_one_file_reports_no_other_matching_file(proj, mode):
+    """rg names no file when its only path is a file, so the hidden-file check must ask for the name."""
+    task = f"t-complete-one-file-{mode}"
+    if not _get_file_ops(task_id=task)._has_command("rg"):
+        pytest.skip("rg not installed")
+    r = _search(proj / "two.py", task, pattern="hit", output_mode=mode)
+    assert "none match" in r["complete"], r
+
+
 @pytest.mark.platforms("linux", "macos")
 @pytest.mark.parametrize("lane", ["rg-native", "rg-shell", "grep"])
 def test_a_partial_search_still_lists_a_readable_filename_with_a_space(proj, monkeypatch, lane):
