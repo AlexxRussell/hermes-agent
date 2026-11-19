@@ -769,7 +769,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
 
         # Clamp facts come from the clamp's own output: budget trim and redaction both change it. A
         # transcoded (UTF-16) read gets none: its bytes on disk are not the text the model saw.
-        clip_hint = (_clipped_line_hint(result.content, read_path, _hint_python(file_ops)) if result_dict.get("truncated_lines")
+        clip_hint = (_clipped_line_hint(result.content, result._variant_path or read_path, _hint_python(file_ops))
+                     if result_dict.get("truncated_lines")
                      and not str(result_dict.get("hint") or "").startswith("Transcoded") else None)
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully

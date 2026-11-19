@@ -35,6 +35,8 @@ class ReadResult:
     _content_sha256: Optional[str] = None
     # read_file_raw refused the file for exceeding its size cap: it exists, but no content came back.
     _too_large: bool = False
+    # The unicode-equivalent on-disk spelling read in place of a path absent byte-for-byte.
+    _variant_path: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_") and v is not None and v != []}

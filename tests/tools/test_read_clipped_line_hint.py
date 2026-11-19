@@ -52,6 +52,20 @@ def test_clipped_line_hint_command_returns_the_next_slice(tmp_path, monkeypatch,
     assert out.rstrip("\n") == line[width:2 * width]
 
 
+@pytest.mark.platforms("posix")  # runs the hint's shell pipeline (tail | head) under bash
+def test_clipped_line_hint_command_reads_the_unicode_equivalent_file(tmp_path):
+    # read_file resolves a straight-quote spelling to the curly-quote name on disk; the command must follow it
+    width = get_max_line_length()
+    line = "".join("abcdefghij"[(i // 997) % 10] for i in range(3 * width))
+    (tmp_path / "Alex’s export.json").write_text(line + "\n", encoding="utf-8")
+
+    result = json.loads(read_file_tool(str(tmp_path / "Alex's export.json"), task_id="clip-hint-variant"))
+
+    out = subprocess.run(["bash", "-c", _hint_command(result)], capture_output=True, encoding="utf-8",
+                         check=True, env={"PATH": os.environ["PATH"]}).stdout
+    assert out.rstrip("\n") == line[width:2 * width]
+
+
 def test_no_slice_command_without_a_clamped_line(tmp_path):
     plain = tmp_path / "plain.txt"
     plain.write_text("one\ntwo\n")

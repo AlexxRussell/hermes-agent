@@ -1085,6 +1085,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "encoding difference: NFC/NFD or special space/quote "
                 "characters).")
             result.hint = f"{note} {result.hint}" if result.hint else note
+            result._variant_path = variant
             return result
         return self._suggest_similar_files(path)
 
