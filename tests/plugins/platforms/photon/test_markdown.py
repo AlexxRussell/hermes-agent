@@ -128,3 +128,20 @@ async def test_url_bearing_markdown_is_stripped_before_the_text_builder(
     assert body["format"] == "markdown"  # the sidecar owns the builder choice (test_rich_links.py)
     assert "**" not in body["text"] and "](" not in body["text"]
     assert "\nhttps://example.com/notes" in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_plain_mode_strips_once_so_code_keeps_its_asterisks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PHOTON_MARKDOWN=false``: ``format_message`` already stripped the reply, so the code it
+    unwrapped must not be read as emphasis by a second strip on the way to the sidecar."""
+    monkeypatch.setenv("PHOTON_MARKDOWN", "false")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send("space-1", "**Run:** `run(*args, **kwargs)`")
+
+    path, body = calls[-1]
+    assert path == "/send"
+    assert body["text"] == "Run: run(*args, **kwargs)"

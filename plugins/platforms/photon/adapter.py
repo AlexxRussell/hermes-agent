@@ -1572,8 +1572,9 @@ class PhotonAdapter(BasePlatformAdapter):
             markdown = False
         send_markdown = markdown and _markdown_enabled()
         # The format key stays even when the text is stripped: the sidecar owns the builder choice,
-        # and an older sidecar without chooseSendFormat must keep rendering natively.
-        text = _sidecar_payload_text(text, send_markdown)
+        # and an older sidecar without chooseSendFormat must keep rendering natively. With markdown
+        # off, format_message already stripped it; a second pass reads the unfenced code as emphasis.
+        text = _sidecar_payload_text(text, send_markdown) if _markdown_enabled() else text
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning("[photon] truncating outbound from %d to %d chars", len(text), self.MAX_MESSAGE_LENGTH)
             text = text[: self.MAX_MESSAGE_LENGTH]
